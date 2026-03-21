@@ -257,9 +257,10 @@ ORDER BY ru.solver_version;</textarea>
 
         let db = null;
 
-        // Get the DB URL — direct GitHub Releases download (no API needed)
+        // DB is served from the same GitHub Pages origin (docs/dashboard/benchmarks.db)
+        // To update: copy benchmarks.db into docs/dashboard/ and push
         function getDbUrl() {
-            return `https://github.com/${REPO}/releases/latest/download/${DB_FILENAME}`;
+            return DB_FILENAME;
         }
 
         async function initDb() {
