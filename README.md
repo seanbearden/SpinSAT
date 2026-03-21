@@ -85,6 +85,28 @@ python3 scripts/compare_results.py --by-size
 | Phase 3 (heuristics) | 608 | 26/26 | Restarts + per-clause α_m |
 | Phase 4 (optimized) | 429 | 26/26 | Auto-zeta + single-pass derivatives |
 
+## Competition Submission TODO
+
+- [ ] Register at organizers@satcompetition.org (deadline: April 19, 2026)
+- [ ] Submit 20 benchmark instances (deadline: April 19, 2026)
+  - [ ] Verify no instance solvable by MiniSat in under 60s (competition requirement)
+  - [ ] Verify all solvable by SpinSAT within 1 hour
+- [ ] Final solver code submission (deadline: April 26, 2026)
+- [ ] System description document, 1-2 pages, IEEE Proceedings style PDF (deadline: May 17, 2026)
+- [ ] Test solver in competition Docker image (`registry.gitlab.com/sosy-lab/benchmarking/competition-scripts/user:latest`)
+- [ ] Make repository public after submission deadline
+
+## Development Tools
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Rust (rustc) | 1.94.0 | Solver implementation language |
+| Kissat | 4.0.4 | CDCL baseline solver for comparison |
+| MiniSat | 2.2.1 | Benchmark difficulty validation |
+| gratchk | (MLton build) | Competition-grade SAT certificate verifier |
+| check_sat | (custom C) | Fast local solution verifier |
+| gtimeout | (coreutils) | macOS timeout command |
+
 ## References
 
 - [Main paper (open access)](https://www.nature.com/articles/s41598-020-76666-2)
