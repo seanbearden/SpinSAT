@@ -8,6 +8,7 @@ use std::env;
 use std::process;
 
 use dmm::Params;
+use integrator::Method;
 use solver::{solve, SolveResult, SolverConfig};
 
 fn main() {
@@ -18,6 +19,7 @@ fn main() {
     let mut seed: u64 = 42;
     let mut zeta: Option<f64> = None;
     let mut auto_zeta = true;
+    let mut method = Method::Euler;
 
     // Parse arguments
     let mut i = 1;
@@ -36,6 +38,16 @@ fn main() {
                 zeta = args.get(i).and_then(|s| s.parse().ok());
                 auto_zeta = false;
             }
+            "--method" | "-m" => {
+                i += 1;
+                method = args
+                    .get(i)
+                    .and_then(|s| Method::from_str(s))
+                    .unwrap_or_else(|| {
+                        eprintln!("Invalid method. Use: euler, trapezoid, rk4");
+                        process::exit(1);
+                    });
+            }
             "--no-auto-zeta" => {
                 auto_zeta = false;
             }
@@ -45,6 +57,7 @@ fn main() {
                 eprintln!("Options:");
                 eprintln!("  -t, --timeout <secs>   Timeout in seconds (default: 5000)");
                 eprintln!("  -s, --seed <n>         Initial random seed (default: 42)");
+                eprintln!("  -m, --method <name>    Integration method: euler, trapezoid, rk4 (default: euler)");
                 eprintln!("  -z, --zeta <val>       Learning rate (default: auto by ratio)");
                 eprintln!("      --no-auto-zeta     Disable auto zeta selection");
                 eprintln!("  -h, --help             Show this help");
@@ -90,19 +103,23 @@ fn main() {
         params.zeta = z;
     }
 
-    eprintln!("c SpinSAT v0.2.0 — DMM-based SAT solver");
+    eprintln!("c SpinSAT v0.3.0 — DMM-based SAT solver");
     eprintln!(
         "c Instance: {} variables, {} clauses (ratio {:.2})",
         formula.num_vars,
         formula.num_clauses(),
         ratio,
     );
-    eprintln!("c Parameters: zeta={:.0e}, seed={}", params.zeta, seed);
+    eprintln!(
+        "c Parameters: method={:?}, zeta={:.0e}, seed={}",
+        method, params.zeta, seed
+    );
 
     // Configure solver
     let config = SolverConfig {
         timeout_secs: timeout,
         initial_seed: seed,
+        method,
         ..Default::default()
     };
 
