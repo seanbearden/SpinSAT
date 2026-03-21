@@ -39,6 +39,7 @@ impl Formula {
     }
 
     #[inline]
+    #[allow(dead_code)]
     pub fn clause_width(&self, m: usize) -> usize {
         self.clauses[m].len()
     }

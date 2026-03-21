@@ -1,8 +1,8 @@
 use crate::formula::Formula;
 
 /// DMM solver parameters (paper defaults).
+/// Note: alpha is not stored here — per-clause alpha_m is in DmmState.
 pub struct Params {
-    pub alpha: f64,
     pub beta: f64,
     pub gamma: f64,
     pub delta: f64,
@@ -15,7 +15,6 @@ pub struct Params {
 impl Default for Params {
     fn default() -> Self {
         Params {
-            alpha: 5.0,
             beta: 20.0,
             gamma: 0.25,
             delta: 0.05,
