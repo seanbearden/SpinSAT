@@ -111,11 +111,28 @@ python3 scripts/compare_results.py --by-size
 - [ ] Test solver in competition Docker image (`registry.gitlab.com/sosy-lab/benchmarking/competition-scripts/user:latest`)
 - [ ] Make repository public after submission deadline
 
+## Versioning & Releases
+
+Versioning is fully automated via [release-plz](https://release-plz.dev/). No conventional commits required.
+
+- Push to `main` → Release PR auto-created with version bump + CHANGELOG
+- Merge the Release PR → git tag + GitHub Release + crates.io publish
+- Pre-compiled static Linux binary (`x86_64-unknown-linux-musl`) attached to every release
+
+```bash
+# Install from crates.io
+cargo install spinsat
+
+# Or download the binary from GitHub Releases
+gh release download --pattern 'spinsat' --repo seanbearden/SpinSAT
+```
+
 ## Development Tools
 
 | Tool | Version | Purpose |
 |------|---------|---------|
 | Rust (rustc) | 1.94.0 | Solver implementation language |
+| release-plz | latest | Automated versioning, CHANGELOG, crates.io publish |
 | Kissat | 4.0.4 | CDCL baseline solver for comparison |
 | MiniSat | 2.2.1 | Benchmark difficulty validation |
 | gratchk | (MLton build) | Competition-grade SAT certificate verifier |

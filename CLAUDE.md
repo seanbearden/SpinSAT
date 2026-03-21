@@ -74,6 +74,7 @@ The original MATLAB implementation used **forward-Euler** with adaptive time ste
 ## Implementation
 
 - **Language**: Rust (pre-compiled static Linux binary for competition submission)
+- **Current version**: Managed by release-plz (auto-incremented, reads from Cargo.toml)
 - **Competition track**: Experimental (no UNSAT proof certificates required)
 - **Integration methods**: Forward Euler (baseline), RK4, Trapezoid — hand-written, no external ODE library
 - **Generalized to k-SAT**: Not limited to 3-SAT; clause width detected from DIMACS input
@@ -83,6 +84,7 @@ The original MATLAB implementation used **forward-Euler** with adaptive time ste
 ```bash
 cargo build --release
 ./target/release/spinsat <instance.cnf>
+./target/release/spinsat --version   # prints version from Cargo.toml
 ```
 
 ### Competition Submission
@@ -107,6 +109,64 @@ Modified competition variants exist in `~/Documents/DiVentraGroup/Factorization/
 - `SpinSAT_smart_restart.m` — Clause removal/restart heuristic
 - `cnf_preprocess.m` — DIMACS parser generalized to k-SAT
 
+## Versioning
+
+**Automated via release-plz** — no manual version bumps, no conventional commits required.
+
+- Version source of truth: `Cargo.toml` (read at compile time via `env!("CARGO_PKG_VERSION")`)
+- **Never hardcode version strings** — use `env!("CARGO_PKG_VERSION")` in Rust code
+- Push to main → release-plz opens a Release PR → merge → git tag + GitHub Release + crates.io publish
+- Pre-compiled static binary attached to every GitHub Release via `release-binary.yml`
+
+### CI/CD Workflows
+- `.github/workflows/ci.yml` — build, test, coverage (cargo-llvm-cov + nextest + Codecov)
+- `.github/workflows/release-plz.yml` — auto version bump + CHANGELOG + crates.io publish
+- `.github/workflows/release-binary.yml` — attach static musl binary to GitHub Releases
+
+### GitHub Secrets Required
+- `CODECOV_TOKEN` — Codecov upload
+- `CARGO_REGISTRY_TOKEN` — crates.io publish (scoped to spinsat crate)
+
+## Benchmarking
+
+### Database (`benchmarks.db`)
+
+SQLite database in project root (gitignored, distributed via GitHub Releases). Contains:
+- **Instance metadata**: 31,809 instances from SAT competition history (snapshot from `~/PycharmProjects/SpinSAT/meta.db`)
+- **Benchmark results**: per-instance solve times with full reproducibility metadata
+- **Competition reference**: SAT competition solve times for comparison
+- **Views**: `best_times`, `version_comparison`
+
+### Setup & Usage
+```bash
+# Initialize DB (one-time, snapshots meta.db)
+python3 scripts/init_benchmarks_db.py
+
+# Official recorded benchmark (auto-detects version, commit, hardware, params)
+python3 scripts/benchmark_suite.py --suite large --record --tag v0.4.0
+
+# Development run (JSON only, no DB recording)
+python3 scripts/benchmark_suite.py --suite tiny --solver spinsat
+
+# Import competition reference data
+python3 scripts/import_competition_data.py --anni-csv <path>/anni-seq.csv
+
+# Refresh instance metadata from meta.db
+python3 scripts/init_benchmarks_db.py --refresh
+```
+
+### Auto-Detection (`--record` flag)
+The benchmark script auto-detects with zero manual input:
+- Solver version from `spinsat --version`
+- Git commit hash and dirty state
+- Hardware description
+- Rust compiler version
+- ODE parameters from SpinSAT stderr (strategy, zeta, seed, restarts, method)
+
+### Dashboard
+- GitHub Pages: `docs/dashboard/index.html` (sql.js-httpvfs, loads DB from GitHub Releases)
+- Datasette Lite: browser-based SQL explorer (link in README)
+
 ## Development Rules
 
 ### Timing and Benchmarking
@@ -127,18 +187,6 @@ Key findings (validated by deep research):
 - **Separate simple loops beat fused complex loops** — LLVM vectorizes branch-free loops independently
 - **AoS beats SoA for k=3** — 48-byte clause fits one cache line; SoA doubles cache fetches
 - **The hot path is memory-bound (2% of peak FLOP)** — algorithmic improvements (fewer steps) matter more than micro-optimization
-
-### Benchmarking Workflow
-```bash
-# Run suite with results tracking
-python3 scripts/benchmark_suite.py --suite large --solver spinsat --timeout 300 --tag mytag
-
-# Compare across runs
-python3 scripts/compare_results.py --by-size
-
-# Controlled A/B comparison (same seed, verify identical step counts)
-python3 scripts/perf_compare.py ./old_binary ./new_binary instances/*.cnf
-```
 
 ## Reference Materials
 
