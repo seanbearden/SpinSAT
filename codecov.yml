@@ -23,4 +23,3 @@ comment:
 ignore:
   - "scripts/**"
   - "benchmarks/**"
-  - "tests/**"

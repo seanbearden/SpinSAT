@@ -1,15 +1,10 @@
-mod dmm;
-mod formula;
-mod integrator;
-mod parser;
-mod solver;
-
 use std::env;
 use std::process;
 
-use dmm::Params;
-use integrator::Method;
-use solver::{solve, SolveResult, SolverConfig};
+use spinsat::dmm::Params;
+use spinsat::integrator::Method;
+use spinsat::parser;
+use spinsat::solver::{solve, SolveResult, SolverConfig};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
