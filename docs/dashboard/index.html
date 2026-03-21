@@ -257,19 +257,9 @@ ORDER BY ru.solver_version;</textarea>
 
         let db = null;
 
-        // Get the DB URL — use direct GitHub Releases download pattern (no API call needed)
-        async function getDbUrl() {
-            // Direct URL pattern: no API call, no CORS issues, no rate limits
-            const directUrl = `https://github.com/${REPO}/releases/latest/download/${DB_FILENAME}`;
-
-            // Verify it exists (GitHub redirects /latest/download/ to the actual tag)
-            try {
-                const resp = await fetch(directUrl, { method: 'HEAD' });
-                if (resp.ok) return directUrl;
-            } catch (e) { /* fall through */ }
-
-            // Fallback: try loading from same directory (local dev)
-            return DB_FILENAME;
+        // Get the DB URL — direct GitHub Releases download (no API needed)
+        function getDbUrl() {
+            return `https://github.com/${REPO}/releases/latest/download/${DB_FILENAME}`;
         }
 
         async function initDb() {
