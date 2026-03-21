@@ -80,9 +80,8 @@ python3 scripts/compare_results.py --by-size
 
 ### Data Explorer
 
-- [**Dashboard**](https://seanbearden.github.io/SpinSAT/dashboard/) — interactive benchmark visualization
-- [**Datasette Lite**](https://lite.datasette.io/?url=https://github.com/seanbearden/SpinSAT/releases/latest/download/benchmarks.db) — ad-hoc SQL queries in your browser (no install)
-- Download `benchmarks.db` from [Releases](https://github.com/seanbearden/SpinSAT/releases/latest) for local analysis
+- [**Dashboard**](https://seanbearden.github.io/SpinSAT/dashboard/) — interactive benchmark visualization (PAR-2 trends, version comparison, SQL explorer)
+- Download `benchmarks.db` from [Releases](https://github.com/seanbearden/SpinSAT/releases/latest) for local analysis with any SQLite client
 
 ### SpinSAT vs Kissat 4.0.4 (planted 3-SAT, ratio 4.3)
 

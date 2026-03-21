@@ -120,8 +120,7 @@ Modified competition variants exist in `~/Documents/DiVentraGroup/Factorization/
 
 ### CI/CD Workflows
 - `.github/workflows/ci.yml` — build, test, coverage (cargo-llvm-cov + nextest + Codecov)
-- `.github/workflows/release-plz.yml` — auto version bump + CHANGELOG + crates.io publish
-- `.github/workflows/release-binary.yml` — attach static musl binary to GitHub Releases
+- `.github/workflows/release-plz.yml` — auto version bump + CHANGELOG + crates.io publish + build/attach static musl binary
 
 ### GitHub Secrets Required
 - `CODECOV_TOKEN` — Codecov upload
@@ -164,8 +163,10 @@ The benchmark script auto-detects with zero manual input:
 - ODE parameters from SpinSAT stderr (strategy, zeta, seed, restarts, method)
 
 ### Dashboard
-- GitHub Pages: `docs/dashboard/index.html` (sql.js-httpvfs, loads DB from GitHub Releases)
+- GitHub Pages: `docs/dashboard/index.html` (sql.js-httpvfs loads `docs/dashboard/benchmarks.db`)
 - Datasette Lite: browser-based SQL explorer (link in README)
+- **To update dashboard data**: `cp benchmarks.db docs/dashboard/benchmarks.db` then commit and push
+- The DB is served from GitHub Pages (same origin) — GitHub Releases URLs have CORS restrictions that block browser fetch
 
 ## Development Rules
 
