@@ -8,22 +8,29 @@ Supports multiple solvers for baseline comparison (e.g., Kissat vs SpinSAT).
 Usage:
     python3 scripts/benchmark_suite.py [--solver spinsat] [--solver kissat] [--timeout 60] [--tag v0.1]
     python3 scripts/benchmark_suite.py --suite small --solver spinsat --timeout 30
+    python3 scripts/benchmark_suite.py --suite large --record --tag v0.4.0
     python3 scripts/benchmark_suite.py --instances benchmarks/competition/UF250.1065.100/*.cnf --solver spinsat
 """
 
 import argparse
+import hashlib
 import json
 import os
+import platform
+import re
+import sqlite3
 import subprocess
 import sys
 import time
 import glob
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
 RESULTS_DIR = PROJECT_ROOT / "results"
 BENCHMARKS_DIR = PROJECT_ROOT / "benchmarks"
+BENCHMARKS_DB = PROJECT_ROOT / "benchmarks.db"
 CHECKER = PROJECT_ROOT / "scripts" / "check_sat"
 
 # Solver configurations
@@ -86,6 +93,116 @@ SUITES = {
     },
 }
 
+
+# ---------------------------------------------------------------------------
+# Auto-detection helpers
+# ---------------------------------------------------------------------------
+
+def detect_solver_version(solver_cmd):
+    """Auto-detect solver version from --version output."""
+    try:
+        result = subprocess.run(
+            [solver_cmd, "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        # Parse "spinsat 0.4.0" format
+        output = result.stdout.strip()
+        parts = output.split()
+        if len(parts) >= 2:
+            return parts[1]
+        return output or "unknown"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return "unknown"
+
+
+def detect_git_info():
+    """Auto-detect git commit and dirty state."""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=str(PROJECT_ROOT)
+        ).stdout.strip()
+
+        dirty_result = subprocess.run(
+            ["git", "diff", "--quiet"],
+            capture_output=True, timeout=5,
+            cwd=str(PROJECT_ROOT)
+        )
+        dirty = dirty_result.returncode != 0
+
+        return commit, dirty
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "unknown", False
+
+
+def detect_rust_version():
+    """Auto-detect Rust compiler version."""
+    try:
+        result = subprocess.run(
+            ["rustc", "--version"],
+            capture_output=True, text=True, timeout=5
+        )
+        return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return "unknown"
+
+
+def detect_hardware():
+    """Auto-detect hardware description."""
+    machine = platform.machine()
+    processor = platform.processor() or machine
+    system = platform.system()
+    return f"{system} {processor} ({machine})"
+
+
+def compute_instance_hash(cnf_path):
+    """Compute SHA-256 hash of a CNF file for instance identification."""
+    h = hashlib.sha256()
+    with open(cnf_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def parse_spinsat_stderr(stderr):
+    """Parse SpinSAT stderr for parameters and solve metadata."""
+    info = {
+        "restarts": 0,
+        "method_used": None,
+        "zeta": None,
+        "strategy": None,
+        "seed": None,
+    }
+
+    for line in stderr.splitlines():
+        # "c Parameters: strategy=Fixed(Euler), zeta=1e-3, seed=1"
+        m = re.search(r"strategy=(\S+),\s*zeta=([^,]+),\s*seed=(\d+)", line)
+        if m:
+            info["strategy"] = m.group(1)
+            try:
+                info["zeta"] = float(m.group(2))
+            except ValueError:
+                pass
+            info["seed"] = int(m.group(3))
+
+        # "c Solved after 3 restarts using Euler (elapsed: 1.2s)"
+        m = re.search(r"Solved after (\d+) restarts using (\S+)", line)
+        if m:
+            info["restarts"] = int(m.group(1))
+            info["method_used"] = m.group(2)
+
+        # "c Restart 5 Euler ..."
+        m = re.search(r"Restart (\d+)", line)
+        if m:
+            info["restarts"] = max(info["restarts"], int(m.group(1)))
+
+    return info
+
+
+# ---------------------------------------------------------------------------
+# Core benchmark functions
+# ---------------------------------------------------------------------------
 
 def generate_instance(n_vars, ratio, seed, output_dir):
     """Generate a planted random 3-SAT instance."""
@@ -169,6 +286,11 @@ def run_solver(solver_name, cnf_path, timeout):
         elapsed = time.time() - start
         status, assignment = parse_solver_output(result.stdout, result.stderr)
 
+        # Parse SpinSAT-specific stderr
+        stderr_info = {}
+        if solver_name == "spinsat":
+            stderr_info = parse_spinsat_stderr(result.stderr)
+
         # Verify if SAT
         verified = "N/A"
         if status == "SATISFIABLE" and CHECKER.exists():
@@ -186,6 +308,7 @@ def run_solver(solver_name, cnf_path, timeout):
             "num_vars": num_vars,
             "num_clauses": num_clauses,
             "ratio": round(ratio, 3),
+            **stderr_info,
         }
 
     except subprocess.TimeoutExpired:
@@ -282,6 +405,10 @@ def run_benchmark(solvers, instances, timeout, tag=""):
     return results
 
 
+# ---------------------------------------------------------------------------
+# Storage: JSON and SQLite
+# ---------------------------------------------------------------------------
+
 def save_results(results, suite_name="custom"):
     """Save results to JSON file."""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -292,6 +419,87 @@ def save_results(results, suite_name="custom"):
     with open(fpath, 'w') as f:
         json.dump(results, f, indent=2)
     return fpath
+
+
+def record_to_db(results, solver_name, run_metadata):
+    """Record benchmark results to benchmarks.db for the given solver."""
+    if not BENCHMARKS_DB.exists():
+        print(f"\nWarning: {BENCHMARKS_DB} not found.")
+        print("Run: python3 scripts/init_benchmarks_db.py")
+        return
+
+    conn = sqlite3.connect(str(BENCHMARKS_DB))
+    cursor = conn.cursor()
+
+    run_id = run_metadata["run_id"]
+
+    # Insert run metadata
+    cursor.execute("""
+        INSERT OR REPLACE INTO runs
+        (run_id, solver_version, git_commit, git_dirty, integration_method,
+         strategy, timestamp, timeout_s, hardware, rust_version, tag, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        run_id,
+        run_metadata["solver_version"],
+        run_metadata["git_commit"],
+        run_metadata["git_dirty"],
+        run_metadata.get("integration_method"),
+        run_metadata.get("strategy"),
+        run_metadata["timestamp"],
+        results["timeout_s"],
+        run_metadata["hardware"],
+        run_metadata.get("rust_version"),
+        results.get("tag", ""),
+        run_metadata.get("notes"),
+    ))
+
+    # Insert per-instance results
+    recorded = 0
+    for inst in results["instances"]:
+        r = inst.get(solver_name, {})
+        if "error" in r:
+            continue
+
+        # Compute instance hash from file
+        cnf_path = inst.get("path", "")
+        if cnf_path and os.path.exists(cnf_path):
+            instance_hash = compute_instance_hash(cnf_path)
+        else:
+            # Fallback: hash from instance name
+            instance_hash = hashlib.sha256(
+                inst.get("instance", "").encode()
+            ).hexdigest()
+
+        cursor.execute("""
+            INSERT OR REPLACE INTO results
+            (run_id, instance_hash, status, time_s, steps, restarts,
+             verified, seed, zeta, alpha, beta, gamma, delta, epsilon,
+             dt_min, dt_max)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            run_id,
+            instance_hash,
+            r.get("status"),
+            r.get("time_s"),
+            r.get("steps"),
+            r.get("restarts"),
+            r.get("verified"),
+            r.get("seed"),
+            r.get("zeta"),
+            None,  # alpha (not yet exposed in stderr)
+            None,  # beta
+            None,  # gamma
+            None,  # delta
+            None,  # epsilon
+            None,  # dt_min
+            None,  # dt_max
+        ))
+        recorded += 1
+
+    conn.commit()
+    conn.close()
+    return recorded
 
 
 def print_summary(results):
@@ -358,6 +566,12 @@ def main():
                         help="Timeout per instance in seconds (default: 60)")
     parser.add_argument("--tag", default="",
                         help="Tag for this run (e.g., 'v0.1', 'after-rk4')")
+    parser.add_argument("--record", action="store_true",
+                        help="Record results to benchmarks.db (official run)")
+    parser.add_argument("--notes", default="",
+                        help="Notes for this recorded run")
+    parser.add_argument("--force", action="store_true",
+                        help="Record even with uncommitted changes (skip prompt)")
     parser.add_argument("--list-suites", action="store_true",
                         help="List available benchmark suites")
 
@@ -385,20 +599,82 @@ def main():
         print("No instances found. Use --suite or --instances.")
         return
 
+    # Auto-detect metadata if recording
+    run_metadata = None
+    if args.record:
+        if not BENCHMARKS_DB.exists():
+            print(f"Error: {BENCHMARKS_DB} not found.")
+            print("Run: python3 scripts/init_benchmarks_db.py")
+            return
+
+        spinsat_cmd = SOLVERS["spinsat"]["cmd"]
+        solver_version = detect_solver_version(spinsat_cmd)
+        git_commit, git_dirty = detect_git_info()
+
+        if git_dirty and not args.force:
+            print("Warning: uncommitted changes detected. Results may not be reproducible.")
+            print("Use --force to record anyway, or commit changes first.")
+            try:
+                response = input("Continue recording? [y/N] ").strip().lower()
+                if response != 'y':
+                    print("Aborting.")
+                    return
+            except EOFError:
+                print("\nAborting (non-interactive). Use --force to skip this check.")
+                return
+
+        run_metadata = {
+            "run_id": datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:6]}",
+            "solver_version": solver_version,
+            "git_commit": git_commit,
+            "git_dirty": git_dirty,
+            "hardware": detect_hardware(),
+            "rust_version": detect_rust_version(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "notes": args.notes,
+        }
+
+        print("=" * 70)
+        print("OFFICIAL BENCHMARK RUN")
+        print("=" * 70)
+        print(f"  Solver version: {solver_version}")
+        print(f"  Git commit:     {git_commit}{'*' if git_dirty else ''}")
+        print(f"  Hardware:       {run_metadata['hardware']}")
+        print(f"  Rust:           {run_metadata['rust_version']}")
+        print()
+
     print(f"Suite: {suite_name}")
     print(f"Instances: {len(instances)}")
     print(f"Solvers: {', '.join(solvers)}")
     print(f"Timeout: {args.timeout}s")
     print(f"Tag: {args.tag or '(none)'}")
+    if args.record:
+        print(f"Recording: YES → {BENCHMARKS_DB}")
     print()
 
     # Run benchmark
     results = run_benchmark(solvers, instances, args.timeout, args.tag)
 
-    # Save and summarize
+    # Save JSON (always)
     fpath = save_results(results, suite_name)
     print_summary(results)
     print(f"Results saved to: {fpath}")
+
+    # Record to DB (if --record)
+    if args.record and run_metadata:
+        # Update strategy from first result's stderr parse
+        for inst in results["instances"]:
+            r = inst.get("spinsat", {})
+            if r.get("strategy"):
+                run_metadata["strategy"] = r["strategy"]
+                run_metadata["integration_method"] = r.get("method_used")
+                break
+
+        recorded = record_to_db(results, "spinsat", run_metadata)
+        if recorded:
+            print(f"Recorded {recorded} results to {BENCHMARKS_DB}")
+            print(f"  Run ID: {run_metadata['run_id']}")
+            print(f"  Version: {run_metadata['solver_version']} ({run_metadata['git_commit']})")
 
 
 if __name__ == "__main__":
