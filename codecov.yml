@@ -16,10 +16,45 @@ coverage:
         target: 70%
 
 comment:
-  layout: "reach,diff,flags,files"
+  layout: "reach,diff,flags,components,files"
   behavior: default
   require_changes: true
 
 ignore:
   - "scripts/**"
   - "benchmarks/**"
+  - "src/main.rs"
+
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+      - type: patch
+        target: 70%
+
+  individual_components:
+    - component_id: parser
+      name: Parser
+      paths:
+        - src/parser.rs
+
+    - component_id: formula
+      name: Formula
+      paths:
+        - src/formula.rs
+
+    - component_id: ode_engine
+      name: ODE Engine
+      paths:
+        - src/dmm.rs
+
+    - component_id: integrators
+      name: Integrators
+      paths:
+        - src/integrator.rs
+
+    - component_id: solver
+      name: Solver
+      paths:
+        - src/solver.rs
