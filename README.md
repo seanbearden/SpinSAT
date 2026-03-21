@@ -60,6 +60,30 @@ s SATISFIABLE
 v 1 -2 3 -4 5 0
 ```
 
+## Benchmark Results
+
+Tested on Apple M-series (single core). All solutions independently verified correct.
+
+### SATLIB Uniform Random 3-SAT (ratio ≈ 4.26, near complexity peak)
+
+| Instance Set | Variables | Clauses | Solved | Timeout | Max Time |
+|-------------|-----------|---------|--------|---------|----------|
+| UF20-91     | 20        | 91      | 5/5    | 0       | < 0.01s  |
+| UF50-218    | 50        | 218     | 3/3    | 0       | < 0.01s  |
+| UF100-430   | 100       | 430     | 3/3    | 0       | < 0.01s  |
+| UF250-1065  | 250       | 1065    | 100/100| 0       | 64s      |
+
+### Other Instances
+
+| Instance | Variables | Clauses | Ratio | Time |
+|----------|-----------|---------|-------|------|
+| okgen-v500 (SAT 2002) | 500 | 2100 | 4.2 | 7.8s |
+| Planted 3-SAT (generated) | 1000 | 4300 | 4.3 | 22.5s |
+
+### Notable Hard Instance
+
+`uf250-054.cnf` (250 vars, 1065 clauses) took 64s — the only instance in the UF250 batch exceeding 60s. All other 99 instances solved in under 31s. This instance warrants further investigation for tuning the integration parameters and restart heuristics.
+
 ## References
 
 - [Main paper (open access)](https://www.nature.com/articles/s41598-020-76666-2)

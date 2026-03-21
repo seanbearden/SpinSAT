@@ -1,0 +1,7 @@
+c Simple satisfiable 3-SAT instance
+c Solution: x1=T, x2=T, x3=T
+p cnf 3 4
+1 2 3 0
+-1 2 3 0
+1 -2 3 0
+1 2 -3 0

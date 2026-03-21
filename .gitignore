@@ -1,0 +1,7 @@
+/target
+.idea/
+meta.db
+benchmark-compilation-script.tar.xz
+benchmarks/competition/
+scripts/check_sat
+*.mat

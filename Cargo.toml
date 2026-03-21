@@ -1,0 +1,16 @@
+[package]
+name = "spinsat"
+version = "0.1.0"
+edition = "2021"
+description = "A dynamic SAT solver based on digital memcomputing machines"
+license = "MIT"
+
+[dependencies]
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
