@@ -71,6 +71,42 @@ The original MATLAB implementation used **forward-Euler** with adaptive time ste
 - **Power-law scaling**: DMM shows ~N^a steps (polynomial) vs exponential for WalkSAT/SID
 - **Collective dynamics**: Variables update collectively (long-range order), not one at a time
 
+## Implementation
+
+- **Language**: Rust (pre-compiled static Linux binary for competition submission)
+- **Competition track**: Experimental (no UNSAT proof certificates required)
+- **Integration methods**: Forward Euler (baseline), RK4, Trapezoid — hand-written, no external ODE library
+- **Generalized to k-SAT**: Not limited to 3-SAT; clause width detected from DIMACS input
+
+### Build & Run
+
+```bash
+cargo build --release
+./target/release/spinsat <instance.cnf>
+```
+
+### Competition Submission
+
+The solver is submitted via GitHub repository with:
+- `build.sh` — builds the solver (or uses pre-compiled binary)
+- `run.sh` — `$1` = path to CNF instance, `$2` = proof output directory
+- Pre-compiled static binary (`x86_64-unknown-linux-musl`) as fallback
+
+### Reference MATLAB Code
+
+The paper's equations are implemented in `~/Downloads/v9_large_ratio/`:
+- `derivative.m` — Core ODE right-hand side (Eqs. 2-6 from the paper)
+- `SeanMethod.m` — Forward Euler with clamping
+- `RungeKutta4.m` — RK4 integrator
+- `main.m` — Orchestrator with paper parameters
+
+Modified competition variants exist in `~/Documents/DiVentraGroup/Factorization/Spin_SAT/clean_versions/`:
+- `SpinSAT_v1_0.m` — Competition solver with modified equations
+- `SpinSAT_v1_1.m` — Variant with MNF sparse matrix optimization
+- `SpinSAT_k5_v1_0.m` — Generalized to 5-SAT
+- `SpinSAT_smart_restart.m` — Clause removal/restart heuristic
+- `cnf_preprocess.m` — DIMACS parser generalized to k-SAT
+
 ## Reference Materials
 
 - `docs/efficient_solution_of_boolean_satisfiability_problems_with_digital_memcomputing.pdf` — Main paper
