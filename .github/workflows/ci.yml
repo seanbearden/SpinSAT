@@ -35,10 +35,11 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Generate coverage and test results
-        run: |
-          cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
-          cargo nextest run --message-format junit --output-file junit.xml
+      - name: Generate coverage
+        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
+
+      - name: Generate test results
+        run: cargo nextest run --message-format junit > junit.xml
         continue-on-error: true
 
       - name: Upload coverage to Codecov
