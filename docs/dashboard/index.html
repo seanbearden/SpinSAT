@@ -361,7 +361,7 @@ ORDER BY ru.solver_version;</textarea>
             renderTable('table-runs', query(`
                 SELECT
                     ru.solver_version as Version,
-                    ru.git_commit as Commit,
+                    ru.git_commit as "Commit",
                     ru.tag as Tag,
                     COUNT(*) as Instances,
                     SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as Solved,
