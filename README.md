@@ -65,12 +65,24 @@ v 1 -2 3 -4 5 0
 
 ## Benchmark Results
 
-Results tracked in `results/` as JSON with PAR-2 scoring. Run benchmarks with:
+Results tracked in a SQLite database (`benchmarks.db`) with full reproducibility metadata. Run official benchmarks with:
 
 ```bash
-python3 scripts/benchmark_suite.py --suite large --solver spinsat --solver kissat --timeout 300 --tag mytag
+# Initialize the benchmark database (one-time setup)
+python3 scripts/init_benchmarks_db.py
+
+# Run an official recorded benchmark
+python3 scripts/benchmark_suite.py --suite large --record --tag v0.4.0
+
+# Compare results across versions
 python3 scripts/compare_results.py --by-size
 ```
+
+### Data Explorer
+
+- [**Dashboard**](https://seanbearden.github.io/SpinSAT/dashboard/) — interactive benchmark visualization
+- [**Datasette Lite**](https://lite.datasette.io/?url=https://github.com/seanbearden/SpinSAT/releases/latest/download/benchmarks.db) — ad-hoc SQL queries in your browser (no install)
+- Download `benchmarks.db` from [Releases](https://github.com/seanbearden/SpinSAT/releases/latest) for local analysis
 
 ### SpinSAT vs Kissat 4.0.4 (planted 3-SAT, ratio 4.3)
 

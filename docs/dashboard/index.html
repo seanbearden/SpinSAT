@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SpinSAT Benchmark Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/sql-wasm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --surface: #161b22;
+            --border: #30363d;
+            --text: #e6edf3;
+            --text-muted: #8b949e;
+            --accent: #58a6ff;
+            --green: #3fb950;
+            --red: #f85149;
+            --yellow: #d29922;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+        }
+        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        header {
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 16px;
+            margin-bottom: 24px;
+        }
+        header h1 { font-size: 24px; font-weight: 600; }
+        header p { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
+        .status-bar {
+            display: flex;
+            gap: 24px;
+            padding: 16px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+        }
+        .stat { text-align: center; }
+        .stat-value { font-size: 28px; font-weight: 600; color: var(--accent); }
+        .stat-label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; }
+        .grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+        @media (max-width: 768px) { .grid { grid-template-columns: 1fr; } }
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 16px;
+        }
+        .card h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; }
+        .card.full-width { grid-column: 1 / -1; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+        th { color: var(--text-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+        .sat { color: var(--green); }
+        .timeout { color: var(--red); }
+        .unknown { color: var(--yellow); }
+        canvas { max-height: 300px; }
+        #loading {
+            text-align: center;
+            padding: 60px;
+            color: var(--text-muted);
+        }
+        #loading .spinner {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        #error {
+            display: none;
+            text-align: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+        #error a { color: var(--accent); }
+        .tab-bar {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 16px;
+            border-bottom: 1px solid var(--border);
+            padding-bottom: 0;
+        }
+        .tab {
+            padding: 8px 16px;
+            cursor: pointer;
+            color: var(--text-muted);
+            border-bottom: 2px solid transparent;
+            font-size: 14px;
+        }
+        .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+        .tab:hover { color: var(--text); }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .query-box {
+            width: 100%;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 13px;
+            resize: vertical;
+            min-height: 60px;
+        }
+        .btn {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+        .btn:hover { opacity: 0.9; }
+        #query-results { margin-top: 12px; overflow-x: auto; }
+        footer {
+            text-align: center;
+            padding: 24px;
+            color: var(--text-muted);
+            font-size: 12px;
+            border-top: 1px solid var(--border);
+            margin-top: 24px;
+        }
+        footer a { color: var(--accent); text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>SpinSAT Benchmark Dashboard</h1>
+            <p>DMM-based SAT solver — performance tracking and competition comparison</p>
+        </header>
+
+        <div id="loading">
+            <div class="spinner"></div>
+            <p style="margin-top: 12px">Loading benchmark database...</p>
+        </div>
+
+        <div id="error">
+            <p>Could not load benchmarks.db.</p>
+            <p style="margin-top: 8px">
+                You can explore the data directly with
+                <a id="datasette-link" href="#">Datasette Lite</a>
+                or download the database from
+                <a id="release-link" href="https://github.com/seanbearden/SpinSAT/releases/latest">GitHub Releases</a>.
+            </p>
+        </div>
+
+        <div id="dashboard" style="display: none;">
+            <div class="status-bar" id="stats-bar"></div>
+
+            <div class="tab-bar">
+                <div class="tab active" data-tab="overview">Overview</div>
+                <div class="tab" data-tab="versions">Version Comparison</div>
+                <div class="tab" data-tab="competition">vs Competition</div>
+                <div class="tab" data-tab="query">SQL Explorer</div>
+            </div>
+
+            <div id="tab-overview" class="tab-content active">
+                <div class="grid">
+                    <div class="card">
+                        <h2>PAR-2 by Version</h2>
+                        <canvas id="chart-par2"></canvas>
+                    </div>
+                    <div class="card">
+                        <h2>Solve Rate by Instance Size</h2>
+                        <canvas id="chart-size"></canvas>
+                    </div>
+                    <div class="card full-width">
+                        <h2>Recent Runs</h2>
+                        <div id="table-runs"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-versions" class="tab-content">
+                <div class="grid">
+                    <div class="card full-width">
+                        <h2>Best Times by Version</h2>
+                        <div id="table-versions"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-competition" class="tab-content">
+                <div class="grid">
+                    <div class="card">
+                        <h2>SpinSAT vs Competition (PAR-2)</h2>
+                        <canvas id="chart-competition"></canvas>
+                    </div>
+                    <div class="card">
+                        <h2>Solver Comparison</h2>
+                        <div id="table-competition"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="tab-query" class="tab-content">
+                <div class="card">
+                    <h2>SQL Explorer</h2>
+                    <textarea class="query-box" id="sql-input">SELECT
+    ru.solver_version,
+    COUNT(*) as total,
+    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as solved,
+    ROUND(AVG(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 3) as avg_time,
+    MAX(r.time_s) as max_time
+FROM results r
+JOIN runs ru USING(run_id)
+GROUP BY ru.solver_version
+ORDER BY ru.solver_version;</textarea>
+                    <button class="btn" onclick="runQuery()">Run Query</button>
+                    <div id="query-results"></div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>
+                SpinSAT — <a href="https://github.com/seanbearden/SpinSAT">GitHub</a> |
+                <a id="footer-datasette" href="#">Datasette Lite</a> |
+                Based on <a href="https://doi.org/10.1038/s41598-020-76666-2">Bearden, Pei &amp; Di Ventra (2020)</a>
+            </p>
+        </footer>
+    </div>
+
+    <script>
+        // Configuration
+        const REPO = 'seanbearden/SpinSAT';
+        const DB_FILENAME = 'benchmarks.db';
+
+        let db = null;
+
+        // Find the latest release DB URL
+        async function getDbUrl() {
+            try {
+                const resp = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`);
+                const release = await resp.json();
+                const asset = release.assets?.find(a => a.name === DB_FILENAME);
+                if (asset) return asset.browser_download_url;
+            } catch (e) { /* fall through */ }
+
+            // Fallback: try loading from same directory (local dev)
+            return DB_FILENAME;
+        }
+
+        async function initDb() {
+            const SQL = await initSqlJs({
+                locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/${file}`
+            });
+
+            const dbUrl = await getDbUrl();
+            try {
+                const resp = await fetch(dbUrl);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const buf = await resp.arrayBuffer();
+                db = new SQL.Database(new Uint8Array(buf));
+
+                // Update Datasette links
+                const datasetteUrl = `https://lite.datasette.io/?url=${encodeURIComponent(dbUrl)}`;
+                document.querySelectorAll('#datasette-link, #footer-datasette').forEach(el => {
+                    el.href = datasetteUrl;
+                });
+
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('dashboard').style.display = 'block';
+                renderDashboard();
+            } catch (e) {
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('error').style.display = 'block';
+                console.error('Failed to load DB:', e);
+            }
+        }
+
+        function query(sql) {
+            try {
+                const result = db.exec(sql);
+                if (result.length === 0) return { columns: [], values: [] };
+                return result[0];
+            } catch (e) {
+                return { columns: ['error'], values: [[e.message]] };
+            }
+        }
+
+        function renderTable(containerId, result) {
+            if (!result.values.length) {
+                document.getElementById(containerId).innerHTML = '<p style="color: var(--text-muted)">No data</p>';
+                return;
+            }
+            let html = '<table><thead><tr>';
+            result.columns.forEach(c => html += `<th>${c}</th>`);
+            html += '</tr></thead><tbody>';
+            result.values.forEach(row => {
+                html += '<tr>';
+                row.forEach((v, i) => {
+                    let cls = '';
+                    if (v === 'SATISFIABLE' || v === 'SAT') cls = 'sat';
+                    else if (v === 'TIMEOUT') cls = 'timeout';
+                    else if (v === 'UNKNOWN') cls = 'unknown';
+                    const display = v === null ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(4)) : v;
+                    html += `<td class="${cls}">${display}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</tbody></table>';
+            document.getElementById(containerId).innerHTML = html;
+        }
+
+        function renderDashboard() {
+            renderStats();
+            renderRunsTable();
+            renderPar2Chart();
+            renderSizeChart();
+            renderVersionTable();
+            renderCompetitionChart();
+            renderCompetitionTable();
+        }
+
+        function renderStats() {
+            const runs = query("SELECT COUNT(*) FROM runs");
+            const results = query("SELECT COUNT(*) FROM results");
+            const solved = query("SELECT COUNT(*) FROM results WHERE status = 'SATISFIABLE'");
+            const instances = query("SELECT COUNT(*) FROM instances");
+            const versions = query("SELECT COUNT(DISTINCT solver_version) FROM runs");
+            const competition = query("SELECT COUNT(*) FROM competition_results");
+
+            const stats = [
+                { value: runs.values[0]?.[0] || 0, label: 'Runs' },
+                { value: results.values[0]?.[0] || 0, label: 'Results' },
+                { value: solved.values[0]?.[0] || 0, label: 'Solved' },
+                { value: instances.values[0]?.[0] || 0, label: 'Instances' },
+                { value: versions.values[0]?.[0] || 0, label: 'Versions' },
+                { value: competition.values[0]?.[0] || 0, label: 'Competition Ref' },
+            ];
+
+            document.getElementById('stats-bar').innerHTML = stats.map(s =>
+                `<div class="stat"><div class="stat-value">${s.value.toLocaleString()}</div><div class="stat-label">${s.label}</div></div>`
+            ).join('');
+        }
+
+        function renderRunsTable() {
+            renderTable('table-runs', query(`
+                SELECT
+                    ru.solver_version as Version,
+                    ru.git_commit as Commit,
+                    ru.tag as Tag,
+                    COUNT(*) as Instances,
+                    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as Solved,
+                    SUM(CASE WHEN r.status = 'TIMEOUT' THEN 1 ELSE 0 END) as Timeouts,
+                    ROUND(AVG(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 3) as 'Avg Time',
+                    ru.hardware as Hardware,
+                    substr(ru.timestamp, 1, 10) as Date
+                FROM results r
+                JOIN runs ru USING(run_id)
+                GROUP BY ru.run_id
+                ORDER BY ru.timestamp DESC
+                LIMIT 20
+            `));
+        }
+
+        function renderPar2Chart() {
+            const data = query(`
+                SELECT
+                    ru.solver_version || ' (' || ru.tag || ')' as label,
+                    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s ELSE 2.0 * ru.timeout_s END) as par2
+                FROM results r
+                JOIN runs ru USING(run_id)
+                GROUP BY ru.run_id
+                ORDER BY ru.timestamp
+            `);
+
+            if (!data.values.length) return;
+
+            new Chart(document.getElementById('chart-par2'), {
+                type: 'bar',
+                data: {
+                    labels: data.values.map(r => r[0]),
+                    datasets: [{
+                        label: 'PAR-2',
+                        data: data.values.map(r => r[1]),
+                        backgroundColor: '#58a6ff88',
+                        borderColor: '#58a6ff',
+                        borderWidth: 1,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        y: { beginAtZero: true, ticks: { color: '#8b949e' }, grid: { color: '#30363d' } },
+                        x: { ticks: { color: '#8b949e', maxRotation: 45 }, grid: { display: false } }
+                    }
+                }
+            });
+        }
+
+        function renderSizeChart() {
+            const data = query(`
+                SELECT
+                    CASE
+                        WHEN i.isohash = 'empty' THEN 'unknown'
+                        ELSE 'known'
+                    END as category,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as solved
+                FROM results r
+                LEFT JOIN instances i ON r.instance_hash = i.hash
+                JOIN runs ru USING(run_id)
+                WHERE ru.run_id = (SELECT run_id FROM runs ORDER BY timestamp DESC LIMIT 1)
+                GROUP BY category
+            `);
+
+            // Fallback: group by num_vars from result metadata
+            const sizeData = query(`
+                SELECT
+                    CASE
+                        WHEN r.time_s < 0.01 THEN '< 0.01s'
+                        WHEN r.time_s < 0.1 THEN '0.01-0.1s'
+                        WHEN r.time_s < 1 THEN '0.1-1s'
+                        WHEN r.time_s < 10 THEN '1-10s'
+                        ELSE '> 10s'
+                    END as bucket,
+                    COUNT(*) as count
+                FROM results r
+                JOIN runs ru USING(run_id)
+                WHERE ru.run_id = (SELECT run_id FROM runs ORDER BY timestamp DESC LIMIT 1)
+                  AND r.status = 'SATISFIABLE'
+                GROUP BY bucket
+                ORDER BY MIN(r.time_s)
+            `);
+
+            if (!sizeData.values.length) return;
+
+            new Chart(document.getElementById('chart-size'), {
+                type: 'doughnut',
+                data: {
+                    labels: sizeData.values.map(r => r[0]),
+                    datasets: [{
+                        data: sizeData.values.map(r => r[1]),
+                        backgroundColor: ['#3fb950', '#58a6ff', '#d29922', '#f0883e', '#f85149'],
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: { position: 'right', labels: { color: '#e6edf3' } }
+                    }
+                }
+            });
+        }
+
+        function renderVersionTable() {
+            renderTable('table-versions', query(`
+                SELECT
+                    ru.solver_version as Version,
+                    ru.tag as Tag,
+                    COUNT(*) as Instances,
+                    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as Solved,
+                    ROUND(MIN(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as 'Best Time',
+                    ROUND(AVG(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as 'Avg Time',
+                    ROUND(MAX(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as 'Max Time',
+                    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s
+                        ELSE 2.0 * ru.timeout_s END) as 'PAR-2'
+                FROM results r
+                JOIN runs ru USING(run_id)
+                GROUP BY ru.run_id
+                ORDER BY ru.timestamp DESC
+            `));
+        }
+
+        function renderCompetitionChart() {
+            const data = query(`
+                SELECT solver, COUNT(*) as solved
+                FROM competition_results
+                WHERE status IN ('SAT', 'SATISFIABLE')
+                GROUP BY solver
+                ORDER BY solved DESC
+                LIMIT 10
+            `);
+
+            if (!data.values.length) {
+                document.getElementById('chart-competition').parentElement.innerHTML =
+                    '<h2>SpinSAT vs Competition</h2><p style="color: var(--text-muted)">No competition data imported yet. Run import_competition_data.py</p>';
+                return;
+            }
+
+            new Chart(document.getElementById('chart-competition'), {
+                type: 'bar',
+                data: {
+                    labels: data.values.map(r => r[0]),
+                    datasets: [{
+                        label: 'Instances Solved',
+                        data: data.values.map(r => r[1]),
+                        backgroundColor: '#3fb95088',
+                        borderColor: '#3fb950',
+                        borderWidth: 1,
+                    }]
+                },
+                options: {
+                    indexAxis: 'y',
+                    responsive: true,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { beginAtZero: true, ticks: { color: '#8b949e' }, grid: { color: '#30363d' } },
+                        y: { ticks: { color: '#8b949e' }, grid: { display: false } }
+                    }
+                }
+            });
+        }
+
+        function renderCompetitionTable() {
+            renderTable('table-competition', query(`
+                SELECT
+                    solver as Solver,
+                    COUNT(*) as Total,
+                    SUM(CASE WHEN status IN ('SAT', 'SATISFIABLE') THEN 1 ELSE 0 END) as Solved,
+                    ROUND(AVG(CASE WHEN status IN ('SAT', 'SATISFIABLE') THEN time_s END), 2) as 'Avg Time',
+                    ROUND(MIN(CASE WHEN status IN ('SAT', 'SATISFIABLE') THEN time_s END), 4) as 'Best Time'
+                FROM competition_results
+                GROUP BY solver
+                ORDER BY Solved DESC
+                LIMIT 15
+            `));
+        }
+
+        function runQuery() {
+            const sql = document.getElementById('sql-input').value;
+            const result = query(sql);
+            renderTable('query-results', result);
+        }
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        // Init
+        initDb();
+    </script>
+</body>
+</html>
