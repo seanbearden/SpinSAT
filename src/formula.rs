@@ -1,62 +1,104 @@
-/// Represents a SAT formula in a form optimized for DMM integration.
+/// Represents a SAT formula optimized for DMM integration.
 ///
-/// For each clause m, we store which variables appear and their polarities.
-/// The polarity q_{n,m} is +1 if variable n appears positive, -1 if negated, 0 if absent.
+/// Uses a flattened storage layout for cache-friendly access:
+/// - All clause data stored contiguously in flat arrays
+/// - `clause_offsets[m]` gives the start index of clause m in the flat arrays
+/// - `var_indices[offset..offset+width]` gives variable indices for clause m
+/// - `polarities[offset..offset+width]` gives polarities for clause m
 ///
-/// For efficient sparse computation, we store per-literal-position data:
-/// For each literal position k in clause m:
-///   - `var_idx`: which variable (0-indexed)
-///   - `polarity`: +1.0 or -1.0
-///   - `half_polarity`: polarity / 2.0 (pre-divided, matching MATLAB optimization)
+/// For uniform k-SAT (all clauses same width), this gives perfect cache locality.
 pub struct Formula {
     pub num_vars: usize,
-    /// Each clause is a list of (variable_index_0based, polarity +1/-1)
-    clauses: Vec<Vec<(usize, f64)>>,
+    num_clauses: usize,
+    /// Start offset of each clause in the flat arrays. Length = num_clauses + 1.
+    clause_offsets: Vec<u32>,
+    /// Flattened variable indices (0-based). Length = total literals.
+    var_indices: Vec<u32>,
+    /// Flattened polarities (+1.0 or -1.0). Length = total literals.
+    polarities: Vec<f64>,
 }
 
 impl Formula {
     pub fn new(num_vars: usize, raw_clauses: Vec<Vec<i32>>) -> Self {
-        let clauses = raw_clauses
-            .into_iter()
-            .map(|clause| {
-                clause
-                    .into_iter()
-                    .map(|lit| {
-                        let var_idx = (lit.unsigned_abs() as usize) - 1;
-                        let polarity = if lit > 0 { 1.0 } else { -1.0 };
-                        (var_idx, polarity)
-                    })
-                    .collect()
-            })
-            .collect();
+        let num_clauses = raw_clauses.len();
+        let total_lits: usize = raw_clauses.iter().map(|c| c.len()).sum();
 
-        Formula { num_vars, clauses }
+        let mut clause_offsets = Vec::with_capacity(num_clauses + 1);
+        let mut var_indices = Vec::with_capacity(total_lits);
+        let mut polarities = Vec::with_capacity(total_lits);
+
+        let mut offset: u32 = 0;
+        for clause in &raw_clauses {
+            clause_offsets.push(offset);
+            for &lit in clause {
+                let var_idx = (lit.unsigned_abs() - 1) as u32;
+                let polarity = if lit > 0 { 1.0 } else { -1.0 };
+                var_indices.push(var_idx);
+                polarities.push(polarity);
+            }
+            offset += clause.len() as u32;
+        }
+        clause_offsets.push(offset);
+
+        Formula {
+            num_vars,
+            num_clauses,
+            clause_offsets,
+            var_indices,
+            polarities,
+        }
     }
 
     #[inline]
     pub fn num_clauses(&self) -> usize {
-        self.clauses.len()
+        self.num_clauses
     }
 
+    /// Get the start offset and width of clause m.
     #[inline]
-    pub fn clause(&self, m: usize) -> &[(usize, f64)] {
-        &self.clauses[m]
+    pub fn clause_range(&self, m: usize) -> (usize, usize) {
+        let start = self.clause_offsets[m] as usize;
+        let end = self.clause_offsets[m + 1] as usize;
+        (start, end - start)
+    }
+
+    /// Get variable index for literal at position `offset + i`.
+    #[inline]
+    pub fn var_idx(&self, pos: usize) -> usize {
+        self.var_indices[pos] as usize
+    }
+
+    /// Get polarity for literal at position `offset + i`.
+    #[inline]
+    pub fn polarity(&self, pos: usize) -> f64 {
+        self.polarities[pos]
     }
 
     #[inline]
     pub fn clause_width(&self, m: usize) -> usize {
-        self.clauses[m].len()
+        let (_, w) = self.clause_range(m);
+        w
     }
 
     /// Verify a Boolean assignment satisfies the formula.
-    /// assignment[i] = true means variable (i+1) is TRUE.
     pub fn verify(&self, assignment: &[bool]) -> bool {
-        self.clauses.iter().all(|clause| {
-            clause.iter().any(|&(var_idx, polarity)| {
-                let val = assignment[var_idx];
-                (polarity > 0.0 && val) || (polarity < 0.0 && !val)
-            })
-        })
+        for m in 0..self.num_clauses {
+            let (start, width) = self.clause_range(m);
+            let mut sat = false;
+            for i in 0..width {
+                let pos = start + i;
+                let var = self.var_idx(pos);
+                let pol = self.polarity(pos);
+                if (pol > 0.0 && assignment[var]) || (pol < 0.0 && !assignment[var]) {
+                    sat = true;
+                    break;
+                }
+            }
+            if !sat {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -78,8 +120,19 @@ mod tests {
     fn test_verify_sat() {
         // (x1 ∨ ¬x2) ∧ (¬x1 ∨ x2)
         let f = Formula::new(2, vec![vec![1, -2], vec![-1, 2]]);
-        assert!(f.verify(&[true, true])); // both true
-        assert!(f.verify(&[false, false])); // both false
-        assert!(!f.verify(&[true, false])); // second clause fails
+        assert!(f.verify(&[true, true]));
+        assert!(f.verify(&[false, false]));
+        assert!(!f.verify(&[true, false]));
+    }
+
+    #[test]
+    fn test_flattened_access() {
+        let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2]]);
+        let (start, width) = f.clause_range(0);
+        assert_eq!(width, 3);
+        assert_eq!(f.var_idx(start), 0); // x1
+        assert_eq!(f.polarity(start), 1.0); // positive
+        assert_eq!(f.var_idx(start + 1), 1); // x2
+        assert_eq!(f.polarity(start + 1), -1.0); // negated
     }
 }

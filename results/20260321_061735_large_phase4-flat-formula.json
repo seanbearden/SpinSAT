@@ -1,0 +1,323 @@
+{
+  "run_id": "20260321_061735",
+  "tag": "phase4-flat-formula",
+  "timestamp": "2026-03-21T06:17:35.333210",
+  "timeout_s": 300,
+  "solvers": [
+    "spinsat"
+  ],
+  "instances": [
+    {
+      "instance": "planted_n500_r4.3_s1.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s1.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 4.6295,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s2.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s2.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 0.0288,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s3.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s3.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 0.2937,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s4.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s4.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 0.0315,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s5.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s5.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 27.4614,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s6.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s6.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 3.6845,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s7.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s7.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 0.035,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s8.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s8.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 7.5578,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s9.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s9.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 2.9735,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n500_r4.3_s10.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n500_r4.3/planted_n500_r4.3_s10.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 2.807,
+        "verified": "VERIFIED",
+        "num_vars": 500,
+        "num_clauses": 2150,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n750_r4.3_s1.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n750_r4.3/planted_n750_r4.3_s1.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 0.0323,
+        "verified": "VERIFIED",
+        "num_vars": 750,
+        "num_clauses": 3225,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n750_r4.3_s2.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n750_r4.3/planted_n750_r4.3_s2.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 8.4651,
+        "verified": "VERIFIED",
+        "num_vars": 750,
+        "num_clauses": 3225,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n750_r4.3_s3.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n750_r4.3/planted_n750_r4.3_s3.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 8.0587,
+        "verified": "VERIFIED",
+        "num_vars": 750,
+        "num_clauses": 3225,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n750_r4.3_s4.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n750_r4.3/planted_n750_r4.3_s4.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 9.7109,
+        "verified": "VERIFIED",
+        "num_vars": 750,
+        "num_clauses": 3225,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n750_r4.3_s5.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n750_r4.3/planted_n750_r4.3_s5.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 0.1414,
+        "verified": "VERIFIED",
+        "num_vars": 750,
+        "num_clauses": 3225,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n1000_r4.3_s1.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n1000_r4.3/planted_n1000_r4.3_s1.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 11.6417,
+        "verified": "VERIFIED",
+        "num_vars": 1000,
+        "num_clauses": 4300,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n1000_r4.3_s2.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n1000_r4.3/planted_n1000_r4.3_s2.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 0.062,
+        "verified": "VERIFIED",
+        "num_vars": 1000,
+        "num_clauses": 4300,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n1000_r4.3_s3.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n1000_r4.3/planted_n1000_r4.3_s3.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 15.3386,
+        "verified": "VERIFIED",
+        "num_vars": 1000,
+        "num_clauses": 4300,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n1000_r4.3_s4.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n1000_r4.3/planted_n1000_r4.3_s4.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 11.8771,
+        "verified": "VERIFIED",
+        "num_vars": 1000,
+        "num_clauses": 4300,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n1000_r4.3_s5.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n1000_r4.3/planted_n1000_r4.3_s5.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 7.7515,
+        "verified": "VERIFIED",
+        "num_vars": 1000,
+        "num_clauses": 4300,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n1500_r4.3_s1.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n1500_r4.3/planted_n1500_r4.3_s1.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 26.3682,
+        "verified": "VERIFIED",
+        "num_vars": 1500,
+        "num_clauses": 6450,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n1500_r4.3_s2.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n1500_r4.3/planted_n1500_r4.3_s2.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 35.4565,
+        "verified": "VERIFIED",
+        "num_vars": 1500,
+        "num_clauses": 6450,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n1500_r4.3_s3.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n1500_r4.3/planted_n1500_r4.3_s3.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 133.8682,
+        "verified": "VERIFIED",
+        "num_vars": 1500,
+        "num_clauses": 6450,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n2000_r4.3_s1.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n2000_r4.3/planted_n2000_r4.3_s1.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 80.1923,
+        "verified": "VERIFIED",
+        "num_vars": 2000,
+        "num_clauses": 8600,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n2000_r4.3_s2.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n2000_r4.3/planted_n2000_r4.3_s2.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 43.4135,
+        "verified": "VERIFIED",
+        "num_vars": 2000,
+        "num_clauses": 8600,
+        "ratio": 4.3
+      }
+    },
+    {
+      "instance": "planted_n2000_r4.3_s3.cnf",
+      "path": "/Users/seanbearden/PycharmProjects/SpinSAT/benchmarks/generated/n2000_r4.3/planted_n2000_r4.3_s3.cnf",
+      "spinsat": {
+        "status": "SATISFIABLE",
+        "time_s": 49.9367,
+        "verified": "VERIFIED",
+        "num_vars": 2000,
+        "num_clauses": 8600,
+        "ratio": 4.3
+      }
+    }
+  ]
+}

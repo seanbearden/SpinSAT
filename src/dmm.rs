@@ -160,10 +160,11 @@ impl DmmState {
 /// Compute clause constraint C_m (Eq. 1).
 #[inline]
 pub fn clause_constraint(formula: &Formula, m: usize, v: &[f64]) -> f64 {
-    let clause = formula.clause(m);
+    let (start, width) = formula.clause_range(m);
     let mut min_val = f64::MAX;
-    for &(var_idx, polarity) in clause {
-        let val = 1.0 - polarity * v[var_idx];
+    for i in 0..width {
+        let pos = start + i;
+        let val = 1.0 - formula.polarity(pos) * v[formula.var_idx(pos)];
         if val < min_val {
             min_val = val;
         }
@@ -208,26 +209,24 @@ pub fn compute_derivatives(
     }
 
     for m in 0..num_clauses {
-        let clause = formula.clause(m);
-        let k = clause.len();
+        let (start, k) = formula.clause_range(m);
 
-        // Compute L values: L_i = ½(1 - q_i · v_i)
-        let mut l_vals: [f64; 16] = [0.0; 16];
-        for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
-            l_vals[i] = 0.5 * (1.0 - polarity * state.v[var_idx]);
-        }
-
-        // Find minimum and second minimum in one pass
+        // Compute L values and find min/second-min in fused loop
         let mut min_val = f64::MAX;
-        let mut min_idx = 0;
+        let mut min_local_idx: usize = 0;
         let mut second_min_val = f64::MAX;
+        let mut l_vals: [f64; 16] = [0.0; 16];
+
         for i in 0..k {
-            if l_vals[i] < min_val {
+            let pos = start + i;
+            let l = 0.5 * (1.0 - formula.polarity(pos) * state.v[formula.var_idx(pos)]);
+            l_vals[i] = l;
+            if l < min_val {
                 second_min_val = min_val;
-                min_val = l_vals[i];
-                min_idx = i;
-            } else if l_vals[i] < second_min_val {
-                second_min_val = l_vals[i];
+                min_val = l;
+                min_local_idx = i;
+            } else if l < second_min_val {
+                second_min_val = l;
             }
         }
 
@@ -243,25 +242,25 @@ pub fn compute_derivatives(
         let xs = state.x_s[m];
         let fs = xl * xs;
 
-        // Gradient term for each literal position
-        // For literal i, we need min over OTHER positions.
-        // Optimization: if i != min_idx, min_others = min_val (the overall min is still in the set).
-        //               if i == min_idx, min_others = second_min_val.
-        for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
-            let min_others = if i == min_idx {
+        // Gradient term for each literal
+        for i in 0..k {
+            let pos = start + i;
+            let var_idx = formula.var_idx(pos);
+            let polarity = formula.polarity(pos);
+            let min_others = if i == min_local_idx {
                 second_min_val
             } else {
                 min_val
             };
-            let g_nm = polarity * min_others;
-            derivs.dv[var_idx] += fs * g_nm;
+            derivs.dv[var_idx] += fs * polarity * min_others;
         }
 
-        // Rigidity term: applies ONLY to the literal achieving the minimum
-        let (var_idx, polarity) = clause[min_idx];
+        // Rigidity term: only for the min literal
+        let min_pos = start + min_local_idx;
+        let var_idx = formula.var_idx(min_pos);
+        let polarity = formula.polarity(min_pos);
         let r_nm = 0.5 * (polarity - state.v[var_idx]);
-        let rigidity_weight = (1.0 + params.zeta * xl) * c_m * (1.0 - xs);
-        derivs.dv[var_idx] += rigidity_weight * r_nm;
+        derivs.dv[var_idx] += (1.0 + params.zeta * xl) * c_m * (1.0 - xs) * r_nm;
     }
 }
 
