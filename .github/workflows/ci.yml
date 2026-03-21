@@ -24,22 +24,13 @@ jobs:
       - name: Build
         run: cargo build --release
 
-      - name: Run tests with coverage and JUnit output
-        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info --message-format junit > junit.xml
+      - name: Run tests with coverage
+        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
           fail_ci_if_error: true
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload test results to Codecov
-        if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v5
-        with:
-          files: junit.xml
-          report_type: test_results
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
