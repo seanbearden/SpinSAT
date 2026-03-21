@@ -2,9 +2,8 @@ use std::env;
 use std::process;
 
 use spinsat::dmm::Params;
-use spinsat::integrator::Method;
 use spinsat::parser;
-use spinsat::solver::{solve, SolveResult, SolverConfig};
+use spinsat::solver::{solve, SolveResult, SolverConfig, Strategy};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -14,7 +13,7 @@ fn main() {
     let mut seed: u64 = 42;
     let mut zeta: Option<f64> = None;
     let mut auto_zeta = true;
-    let mut method = Method::Euler;
+    let mut strategy = Strategy::Adaptive;
 
     // Parse arguments
     let mut i = 1;
@@ -35,11 +34,13 @@ fn main() {
             }
             "--method" | "-m" => {
                 i += 1;
-                method = args
+                strategy = args
                     .get(i)
-                    .and_then(|s| Method::from_str(s))
+                    .and_then(|s| Strategy::from_str(s))
                     .unwrap_or_else(|| {
-                        eprintln!("Invalid method. Use: euler, trapezoid, rk4");
+                        eprintln!(
+                            "Invalid method. Use: euler, trapezoid, rk4, alternate, probe, auto"
+                        );
                         process::exit(1);
                     });
             }
@@ -52,7 +53,7 @@ fn main() {
                 eprintln!("Options:");
                 eprintln!("  -t, --timeout <secs>   Timeout in seconds (default: 5000)");
                 eprintln!("  -s, --seed <n>         Initial random seed (default: 42)");
-                eprintln!("  -m, --method <name>    Integration method: euler, trapezoid, rk4 (default: euler)");
+                eprintln!("  -m, --method <name>    Strategy: euler, trapezoid, rk4, alternate, probe, auto (default: auto)");
                 eprintln!("  -z, --zeta <val>       Learning rate (default: auto by ratio)");
                 eprintln!("      --no-auto-zeta     Disable auto zeta selection");
                 eprintln!("  -h, --help             Show this help");
@@ -98,7 +99,7 @@ fn main() {
         params.zeta = z;
     }
 
-    eprintln!("c SpinSAT v0.3.1 — DMM-based SAT solver");
+    eprintln!("c SpinSAT v0.4.0 — DMM-based SAT solver");
     eprintln!(
         "c Instance: {} variables, {} clauses (ratio {:.2})",
         formula.num_vars,
@@ -106,15 +107,15 @@ fn main() {
         ratio,
     );
     eprintln!(
-        "c Parameters: method={:?}, zeta={:.0e}, seed={}",
-        method, params.zeta, seed
+        "c Parameters: strategy={:?}, zeta={:.0e}, seed={}",
+        strategy, params.zeta, seed
     );
 
     // Configure solver
     let config = SolverConfig {
         timeout_secs: timeout,
         initial_seed: seed,
-        method,
+        strategy,
         ..Default::default()
     };
 

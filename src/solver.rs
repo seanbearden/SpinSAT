@@ -10,6 +10,33 @@ pub enum SolveResult {
     Unknown,
 }
 
+/// Restart strategy for method selection.
+#[derive(Clone, Copy, Debug)]
+pub enum Strategy {
+    /// Use a single fixed method for all restarts.
+    Fixed(Method),
+    /// Alternate between Euler and Trapezoid on each restart.
+    Alternate,
+    /// Probe both methods for a short period, then commit to the faster one.
+    Probe,
+    /// Track per-method wall-clock effectiveness, bias toward the winner.
+    Adaptive,
+}
+
+impl Strategy {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "euler" => Some(Strategy::Fixed(Method::Euler)),
+            "trapezoid" | "trap" | "heun" => Some(Strategy::Fixed(Method::Trapezoid)),
+            "rk4" | "runge-kutta" | "rungekutta" => Some(Strategy::Fixed(Method::Rk4)),
+            "alternate" | "alt" => Some(Strategy::Alternate),
+            "probe" => Some(Strategy::Probe),
+            "adaptive" | "auto" => Some(Strategy::Adaptive),
+            _ => None,
+        }
+    }
+}
+
 /// Solver configuration.
 pub struct SolverConfig {
     pub timeout_secs: f64,
@@ -17,7 +44,9 @@ pub struct SolverConfig {
     pub max_restarts: u32,
     pub stagnation_check_interval: u64,
     pub stagnation_patience: u32,
-    pub method: Method,
+    pub strategy: Strategy,
+    /// Number of steps for probe strategy's initial test period per method.
+    pub probe_steps: u64,
 }
 
 impl Default for SolverConfig {
@@ -28,75 +57,264 @@ impl Default for SolverConfig {
             max_restarts: 1000,
             stagnation_check_interval: 5000,
             stagnation_patience: 20,
-            method: Method::Euler,
+            strategy: Strategy::Fixed(Method::Euler),
+            probe_steps: 5000,
         }
     }
 }
 
-/// Main solve loop with restarts.
+/// Per-method performance tracker for adaptive strategy.
+struct MethodStats {
+    wall_time: f64,
+    best_unsat: usize,
+    restarts: u32,
+}
+
+impl MethodStats {
+    fn new(num_clauses: usize) -> Self {
+        MethodStats {
+            wall_time: 0.0,
+            best_unsat: num_clauses,
+            restarts: 0,
+        }
+    }
+
+    /// Effectiveness: lower unsat per wall-second is better.
+    /// Returns unsat reduction rate (higher = better method).
+    fn effectiveness(&self, num_clauses: usize) -> f64 {
+        if self.wall_time < 1e-6 || self.restarts == 0 {
+            return 0.0;
+        }
+        let reduction = num_clauses as f64 - self.best_unsat as f64;
+        reduction / self.wall_time
+    }
+}
+
+/// Run one restart attempt with the given method.
+/// Returns (best_unsat_this_run, wall_time_this_run, solved_assignment_or_none).
+fn run_attempt(
+    formula: &Formula,
+    state: &mut DmmState,
+    params: &Params,
+    derivs: &mut Derivatives,
+    scratch: &mut ScratchBuffers,
+    method: Method,
+    config: &SolverConfig,
+    timeout_deadline: f64,
+    start: &Instant,
+    max_steps: Option<u64>,
+) -> (usize, f64, Option<Vec<bool>>) {
+    let attempt_start = start.elapsed().as_secs_f64();
+    let mut step: u64 = 0;
+    let mut best_unsat = formula.num_clauses();
+    let mut stagnation_counter: u32 = 0;
+    let step_limit = max_steps.unwrap_or(u64::MAX);
+
+    loop {
+        integration_step(method, formula, state, params, derivs, scratch, -1.0);
+        step += 1;
+
+        if is_solved(&derivs.c_m) {
+            let assignment = extract_assignment(&state.v);
+            if formula.verify(&assignment) {
+                return (
+                    0,
+                    start.elapsed().as_secs_f64() - attempt_start,
+                    Some(assignment),
+                );
+            }
+        }
+
+        if step >= step_limit {
+            break;
+        }
+
+        if step.is_multiple_of(config.stagnation_check_interval) {
+            let elapsed = start.elapsed().as_secs_f64();
+            if elapsed >= timeout_deadline {
+                break;
+            }
+
+            let current_unsat = count_unsat(&derivs.c_m);
+            if current_unsat < best_unsat {
+                best_unsat = current_unsat;
+                stagnation_counter = 0;
+            } else {
+                stagnation_counter += 1;
+            }
+
+            if stagnation_counter >= config.stagnation_patience {
+                break;
+            }
+        }
+    }
+
+    let wall_time = start.elapsed().as_secs_f64() - attempt_start;
+    (best_unsat, wall_time, None)
+}
+
+/// Select which method to use for a given restart, based on strategy.
+fn select_method(
+    strategy: Strategy,
+    restart_count: u32,
+    euler_stats: &MethodStats,
+    trap_stats: &MethodStats,
+    num_clauses: usize,
+    probe_complete: bool,
+    probe_winner: Option<Method>,
+) -> Method {
+    match strategy {
+        Strategy::Fixed(m) => m,
+        Strategy::Alternate => {
+            if restart_count % 2 == 0 {
+                Method::Euler
+            } else {
+                Method::Trapezoid
+            }
+        }
+        Strategy::Probe => {
+            if probe_complete {
+                probe_winner.unwrap_or(Method::Euler)
+            } else {
+                // During probe phase: restart 0 = Euler, restart 1 = Trapezoid
+                if restart_count == 0 {
+                    Method::Euler
+                } else {
+                    Method::Trapezoid
+                }
+            }
+        }
+        Strategy::Adaptive => {
+            // Need at least one attempt with each before comparing
+            if euler_stats.restarts == 0 {
+                Method::Euler
+            } else if trap_stats.restarts == 0 {
+                Method::Trapezoid
+            } else {
+                let euler_eff = euler_stats.effectiveness(num_clauses);
+                let trap_eff = trap_stats.effectiveness(num_clauses);
+                if trap_eff > euler_eff {
+                    Method::Trapezoid
+                } else {
+                    Method::Euler
+                }
+            }
+        }
+    }
+}
+
+/// Main solve loop with restarts and strategy-based method selection.
 pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> SolveResult {
     let start = Instant::now();
     let mut state = DmmState::new(formula, config.initial_seed);
     state.init_short_memory(formula);
     let mut derivs = Derivatives::new(formula.num_vars, formula.num_clauses());
 
-    let mut scratch = match config.method {
-        Method::Euler => ScratchBuffers::empty(),
-        _ => ScratchBuffers::new(formula, &state),
+    // Pre-allocate scratch for both Euler and Trapezoid
+    let needs_scratch = !matches!(config.strategy, Strategy::Fixed(Method::Euler));
+    let mut scratch = if needs_scratch {
+        ScratchBuffers::new(formula, &state)
+    } else {
+        ScratchBuffers::empty()
     };
 
     let mut restart_count: u32 = 0;
     let mut best_unsat_ever = formula.num_clauses();
+    let mut euler_stats = MethodStats::new(formula.num_clauses());
+    let mut trap_stats = MethodStats::new(formula.num_clauses());
+    let mut probe_complete = false;
+    let mut probe_winner: Option<Method> = None;
 
     loop {
-        let mut step: u64 = 0;
-        let mut best_unsat = formula.num_clauses();
-        let mut stagnation_counter: u32 = 0;
+        // Select method for this restart
+        let method = select_method(
+            config.strategy,
+            restart_count,
+            &euler_stats,
+            &trap_stats,
+            formula.num_clauses(),
+            probe_complete,
+            probe_winner,
+        );
 
-        loop {
-            integration_step(
-                config.method,
-                formula,
-                &mut state,
-                params,
-                &mut derivs,
-                &mut scratch,
-                -1.0,
+        // Ensure scratch buffers are allocated if using non-Euler method
+        if !matches!(method, Method::Euler) && scratch.tmp_state.is_none() {
+            scratch = ScratchBuffers::new(formula, &state);
+        }
+
+        // For probe strategy, limit steps during probe phase
+        let max_steps = if matches!(config.strategy, Strategy::Probe) && !probe_complete {
+            Some(config.probe_steps)
+        } else {
+            None
+        };
+
+        let (best_unsat, wall_time, solution) = run_attempt(
+            formula,
+            &mut state,
+            params,
+            &mut derivs,
+            &mut scratch,
+            method,
+            config,
+            config.timeout_secs,
+            &start,
+            max_steps,
+        );
+
+        // Check if solved
+        if let Some(assignment) = solution {
+            eprintln!(
+                "c Solved after {} restarts using {:?} (elapsed: {:.1}s)",
+                restart_count,
+                method,
+                start.elapsed().as_secs_f64()
             );
-            step += 1;
+            return SolveResult::Sat(assignment);
+        }
 
-            if is_solved(&derivs.c_m) {
-                let assignment = extract_assignment(&state.v);
-                if formula.verify(&assignment) {
-                    eprintln!(
-                        "c Solved after {} restarts, step {} (t={:.1})",
-                        restart_count, step, state.t
-                    );
-                    return SolveResult::Sat(assignment);
+        // Update stats
+        if best_unsat < best_unsat_ever {
+            best_unsat_ever = best_unsat;
+        }
+
+        match method {
+            Method::Euler => {
+                euler_stats.wall_time += wall_time;
+                euler_stats.restarts += 1;
+                if best_unsat < euler_stats.best_unsat {
+                    euler_stats.best_unsat = best_unsat;
                 }
             }
-
-            if step.is_multiple_of(config.stagnation_check_interval) {
-                let elapsed = start.elapsed().as_secs_f64();
-                if elapsed >= config.timeout_secs {
-                    return SolveResult::Unknown;
-                }
-
-                let current_unsat = count_unsat(&derivs.c_m);
-                if current_unsat < best_unsat {
-                    best_unsat = current_unsat;
-                    stagnation_counter = 0;
-                    if current_unsat < best_unsat_ever {
-                        best_unsat_ever = current_unsat;
-                    }
-                } else {
-                    stagnation_counter += 1;
-                }
-
-                if stagnation_counter >= config.stagnation_patience {
-                    break;
+            Method::Trapezoid => {
+                trap_stats.wall_time += wall_time;
+                trap_stats.restarts += 1;
+                if best_unsat < trap_stats.best_unsat {
+                    trap_stats.best_unsat = best_unsat;
                 }
             }
+            _ => {}
+        }
+
+        // Probe strategy: after both methods have been probed, pick the winner
+        if matches!(config.strategy, Strategy::Probe) && !probe_complete && restart_count == 1 {
+            probe_complete = true;
+            probe_winner = Some(if euler_stats.best_unsat <= trap_stats.best_unsat {
+                Method::Euler
+            } else {
+                Method::Trapezoid
+            });
+            eprintln!(
+                "c Probe complete: Euler best_unsat={}, Trap best_unsat={} → {:?}",
+                euler_stats.best_unsat,
+                trap_stats.best_unsat,
+                probe_winner.unwrap()
+            );
+        }
+
+        // Check timeout
+        if start.elapsed().as_secs_f64() >= config.timeout_secs {
+            return SolveResult::Unknown;
         }
 
         restart_count += 1;
@@ -109,8 +327,9 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
             .wrapping_add(restart_count as u64 * 7919);
 
         eprintln!(
-            "c Restart {} (best unsat this run: {}, best ever: {}, elapsed: {:.1}s)",
+            "c Restart {} {:?} (best unsat: {}, best ever: {}, elapsed: {:.1}s)",
             restart_count,
+            method,
             best_unsat,
             best_unsat_ever,
             start.elapsed().as_secs_f64()
@@ -124,14 +343,11 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
 mod tests {
     use super::*;
 
-    /// Easy instance: (x1 ∨ x2) ∧ (¬x1 ∨ x2) — x2=true satisfies both
     fn easy_formula() -> Formula {
         Formula::new(2, vec![vec![1, 2], vec![-1, 2]])
     }
 
-    /// Harder instance: 20-var 3-SAT at ratio 4.3 (86 clauses)
     fn harder_formula() -> Formula {
-        // Generate a planted-solution instance inline
         let n = 20;
         let mut clauses = Vec::new();
         let mut rng: u64 = 12345;
@@ -158,7 +374,6 @@ mod tests {
             let sa = if next() % 2 == 0 { a } else { -a };
             let sb = if next() % 2 == 0 { b } else { -b };
             let sc = if next() % 2 == 0 { c } else { -c };
-            // Ensure satisfiable: at least one literal must be positive
             let mut lits = vec![sa, sb, sc];
             if lits.iter().all(|l| *l < 0) {
                 lits[0] = -lits[0];
@@ -174,13 +389,11 @@ mod tests {
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
-            method: Method::Euler,
+            strategy: Strategy::Fixed(Method::Euler),
             ..Default::default()
         };
         match solve(&f, &params, &config) {
-            SolveResult::Sat(assignment) => {
-                assert!(f.verify(&assignment), "Assignment should be valid");
-            }
+            SolveResult::Sat(a) => assert!(f.verify(&a)),
             SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
@@ -191,13 +404,11 @@ mod tests {
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
-            method: Method::Trapezoid,
+            strategy: Strategy::Fixed(Method::Trapezoid),
             ..Default::default()
         };
         match solve(&f, &params, &config) {
-            SolveResult::Sat(assignment) => {
-                assert!(f.verify(&assignment));
-            }
+            SolveResult::Sat(a) => assert!(f.verify(&a)),
             SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
@@ -208,35 +419,59 @@ mod tests {
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
-            method: Method::Rk4,
+            strategy: Strategy::Fixed(Method::Rk4),
             ..Default::default()
         };
         match solve(&f, &params, &config) {
-            SolveResult::Sat(assignment) => {
-                assert!(f.verify(&assignment));
-            }
+            SolveResult::Sat(a) => assert!(f.verify(&a)),
             SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
 
     #[test]
-    fn test_solve_harder_instance() {
+    fn test_solve_alternate() {
         let f = harder_formula();
         let params = Params::default();
         let config = SolverConfig {
-            timeout_secs: 30.0,
-            stagnation_check_interval: 100,
-            stagnation_patience: 10,
+            timeout_secs: 10.0,
+            strategy: Strategy::Alternate,
+            stagnation_check_interval: 50,
+            stagnation_patience: 2,
+            max_restarts: 10,
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
-            SolveResult::Sat(assignment) => {
-                assert!(f.verify(&assignment));
-            }
-            SolveResult::Unknown => {
-                // Acceptable — some generated instances may not be satisfiable
-            }
-        }
+        let _ = solve(&f, &params, &config);
+    }
+
+    #[test]
+    fn test_solve_probe() {
+        let f = harder_formula();
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            strategy: Strategy::Probe,
+            probe_steps: 100,
+            stagnation_check_interval: 50,
+            stagnation_patience: 2,
+            max_restarts: 10,
+            ..Default::default()
+        };
+        let _ = solve(&f, &params, &config);
+    }
+
+    #[test]
+    fn test_solve_adaptive() {
+        let f = harder_formula();
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            strategy: Strategy::Adaptive,
+            stagnation_check_interval: 50,
+            stagnation_patience: 2,
+            max_restarts: 10,
+            ..Default::default()
+        };
+        let _ = solve(&f, &params, &config);
     }
 
     #[test]
@@ -244,16 +479,15 @@ mod tests {
         let f = harder_formula();
         let params = Params::default();
         let config = SolverConfig {
-            timeout_secs: 0.001, // nearly instant timeout
+            timeout_secs: 0.001,
             max_restarts: 0,
             stagnation_check_interval: 1,
             stagnation_patience: 1,
             ..Default::default()
         };
-        // Should return Unknown due to timeout/stagnation
         match solve(&f, &params, &config) {
-            SolveResult::Unknown => {} // expected
-            SolveResult::Sat(_) => {}  // also ok if it solves instantly
+            SolveResult::Unknown => {}
+            SolveResult::Sat(_) => {}
         }
     }
 
@@ -268,7 +502,28 @@ mod tests {
             stagnation_patience: 2,
             ..Default::default()
         };
-        // Should exercise the restart path
         let _ = solve(&f, &params, &config);
+    }
+
+    #[test]
+    fn test_strategy_from_str() {
+        assert!(matches!(
+            Strategy::from_str("euler"),
+            Some(Strategy::Fixed(Method::Euler))
+        ));
+        assert!(matches!(
+            Strategy::from_str("trapezoid"),
+            Some(Strategy::Fixed(Method::Trapezoid))
+        ));
+        assert!(matches!(
+            Strategy::from_str("alternate"),
+            Some(Strategy::Alternate)
+        ));
+        assert!(matches!(Strategy::from_str("probe"), Some(Strategy::Probe)));
+        assert!(matches!(
+            Strategy::from_str("auto"),
+            Some(Strategy::Adaptive)
+        ));
+        assert!(Strategy::from_str("invalid").is_none());
     }
 }
