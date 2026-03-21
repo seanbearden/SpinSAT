@@ -103,7 +103,7 @@ fn main() {
         params.zeta = z;
     }
 
-    eprintln!("c SpinSAT v0.3.0 — DMM-based SAT solver");
+    eprintln!("c SpinSAT v0.3.1 — DMM-based SAT solver");
     eprintln!(
         "c Instance: {} variables, {} clauses (ratio {:.2})",
         formula.num_vars,
