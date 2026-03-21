@@ -7,21 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        run: rustup update stable
-
-      - name: Build
-        run: cargo build --release
-
-      - name: Run tests
-        run: cargo test
-
-  coverage:
+  ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,25 +21,16 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Generate coverage and test results
-        run: |
-          cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
-          cargo nextest run --message-format junit --output-file junit.xml
-        continue-on-error: true
+      - name: Build
+        run: cargo build --release
+
+      - name: Run tests with coverage
+        run: cargo llvm-cov nextest --all-features --workspace --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
           files: lcov.info
           fail_ci_if_error: true
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Upload test results to Codecov
-        if: ${{ !cancelled() }}
-        uses: codecov/codecov-action@v5
-        with:
-          files: junit.xml
-          report-type: test_results
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
