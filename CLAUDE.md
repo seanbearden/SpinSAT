@@ -107,6 +107,39 @@ Modified competition variants exist in `~/Documents/DiVentraGroup/Factorization/
 - `SpinSAT_smart_restart.m` — Clause removal/restart heuristic
 - `cnf_preprocess.m` — DIMACS parser generalized to k-SAT
 
+## Development Rules
+
+### Timing and Benchmarking
+**NEVER time the solver using shell `time` command or bash subshells** — output capture is unreliable on macOS. Always use Python `time.time()` or `scripts/perf_compare.py` for controlled measurements. Wasted experiments are expensive.
+
+For controlled A/B comparisons:
+- Use `scripts/perf_compare.py <solver_a> <solver_b> <instances...>`
+- Same seed (`-s 1`), same method (`-m euler`), verify identical step counts
+- Run 3x minimum to confirm consistency (variance should be < 1%)
+
+### Performance Optimization
+**Do NOT optimize for Apple M-series local hardware.** The competition runs on Intel Xeon Platinum 8368 (x86-64). Only apply optimizations that are architecture-general:
+- LLVM IR-level optimizations (loop structure, vectorization enablement) — universal
+- Cache layout (both Intel and Apple use 64-byte L1 cache lines) — universal
+- Hardware-specific register allocation quirks — NOT portable, do not pursue
+
+Key findings (validated by deep research):
+- **Separate simple loops beat fused complex loops** — LLVM vectorizes branch-free loops independently
+- **AoS beats SoA for k=3** — 48-byte clause fits one cache line; SoA doubles cache fetches
+- **The hot path is memory-bound (2% of peak FLOP)** — algorithmic improvements (fewer steps) matter more than micro-optimization
+
+### Benchmarking Workflow
+```bash
+# Run suite with results tracking
+python3 scripts/benchmark_suite.py --suite large --solver spinsat --timeout 300 --tag mytag
+
+# Compare across runs
+python3 scripts/compare_results.py --by-size
+
+# Controlled A/B comparison (same seed, verify identical step counts)
+python3 scripts/perf_compare.py ./old_binary ./new_binary instances/*.cnf
+```
+
 ## Reference Materials
 
 - `docs/efficient_solution_of_boolean_satisfiability_problems_with_digital_memcomputing.pdf` — Main paper

@@ -62,27 +62,28 @@ v 1 -2 3 -4 5 0
 
 ## Benchmark Results
 
-Tested on Apple M-series (single core). All solutions independently verified correct.
+Results tracked in `results/` as JSON with PAR-2 scoring. Run benchmarks with:
 
-### SATLIB Uniform Random 3-SAT (ratio ≈ 4.26, near complexity peak)
+```bash
+python3 scripts/benchmark_suite.py --suite large --solver spinsat --solver kissat --timeout 300 --tag mytag
+python3 scripts/compare_results.py --by-size
+```
 
-| Instance Set | Variables | Clauses | Solved | Timeout | Max Time |
-|-------------|-----------|---------|--------|---------|----------|
-| UF20-91     | 20        | 91      | 5/5    | 0       | < 0.01s  |
-| UF50-218    | 50        | 218     | 3/3    | 0       | < 0.01s  |
-| UF100-430   | 100       | 430     | 3/3    | 0       | < 0.01s  |
-| UF250-1065  | 250       | 1065    | 100/100| 0       | 64s      |
+### SpinSAT vs Kissat 4.0.4 (planted 3-SAT, ratio 4.3)
 
-### Other Instances
+| Suite | Vars | SpinSAT Solved | SpinSAT PAR-2 | Kissat PAR-2 |
+|-------|------|---------------|---------------|--------------|
+| Small | 100-250 | 40/40 | 2.4 | 1.3 |
+| Medium | 250-500 | 40/40 | 60 | 11 |
+| Large | 500-2000 | 26/26 | 429 | 64 |
 
-| Instance | Variables | Clauses | Ratio | Time |
-|----------|-----------|---------|-------|------|
-| okgen-v500 (SAT 2002) | 500 | 2100 | 4.2 | 7.8s |
-| Planted 3-SAT (generated) | 1000 | 4300 | 4.3 | 22.5s |
+### Progress Across Phases
 
-### Notable Hard Instance
-
-`uf250-054.cnf` (250 vars, 1065 clauses) took 64s — the only instance in the UF250 batch exceeding 60s. All other 99 instances solved in under 31s. This instance warrants further investigation for tuning the integration parameters and restart heuristics.
+| Phase | Large PAR-2 | Solved | Key Change |
+|-------|-------------|--------|------------|
+| Phase 1 (baseline) | 2113 | 24/26 | Core Euler solver |
+| Phase 3 (heuristics) | 608 | 26/26 | Restarts + per-clause α_m |
+| Phase 4 (optimized) | 429 | 26/26 | Auto-zeta + single-pass derivatives |
 
 ## References
 
