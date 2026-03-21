@@ -30,11 +30,18 @@ impl Default for Params {
 impl Params {
     /// Auto-select zeta based on clause-to-variable ratio.
     /// From the paper: ζ=10⁻¹ for high ratio (≥6), ζ=10⁻² for ratio≈5, ζ=10⁻³ near α_r≈4.27.
+    /// Uses log-linear interpolation for smooth transition.
     pub fn with_auto_zeta(mut self, ratio: f64) -> Self {
         self.zeta = if ratio >= 6.0 {
             1e-1
         } else if ratio >= 5.0 {
-            1e-2
+            // Interpolate between 1e-2 (ratio=5) and 1e-1 (ratio=6)
+            let t = ratio - 5.0; // 0..1
+            10f64.powf(-2.0 + t)
+        } else if ratio >= 4.5 {
+            // Interpolate between 1e-3 (ratio=4.5) and 1e-2 (ratio=5)
+            let t = (ratio - 4.5) * 2.0; // 0..1
+            10f64.powf(-3.0 + t)
         } else {
             1e-3
         };
@@ -185,6 +192,8 @@ impl Derivatives {
 
 /// Compute all derivatives for the DMM system (Eqs. 2-6).
 /// Uses per-clause alpha_m instead of global alpha for long-term memory.
+/// Single-pass implementation: computes C_m, memory derivatives, and voltage
+/// derivatives together to avoid redundant L-value computation.
 pub fn compute_derivatives(
     formula: &Formula,
     state: &DmmState,
@@ -198,65 +207,52 @@ pub fn compute_derivatives(
         *d = 0.0;
     }
 
-    // First pass: compute C_m and memory derivatives
     for m in 0..num_clauses {
         let clause = formula.clause(m);
         let k = clause.len();
 
+        // Compute L values: L_i = ½(1 - q_i · v_i)
         let mut l_vals: [f64; 16] = [0.0; 16];
         for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
             l_vals[i] = 0.5 * (1.0 - polarity * state.v[var_idx]);
         }
 
+        // Find minimum and second minimum in one pass
         let mut min_val = f64::MAX;
+        let mut min_idx = 0;
+        let mut second_min_val = f64::MAX;
         for i in 0..k {
             if l_vals[i] < min_val {
+                second_min_val = min_val;
                 min_val = l_vals[i];
+                min_idx = i;
+            } else if l_vals[i] < second_min_val {
+                second_min_val = l_vals[i];
             }
         }
 
         let c_m = min_val;
         derivs.c_m[m] = c_m;
 
-        // Short-term memory derivative (Eq. 3)
+        // Memory derivatives
         derivs.dx_s[m] = params.beta * (state.x_s[m] + params.epsilon) * (c_m - params.gamma);
-
-        // Long-term memory derivative (Eq. 4) — uses per-clause alpha_m
         derivs.dx_l[m] = state.alpha_m[m] * (c_m - params.delta);
-    }
 
-    // Second pass: voltage derivatives
-    for m in 0..num_clauses {
-        let clause = formula.clause(m);
-        let k = clause.len();
-
+        // Voltage derivatives — fused gradient + rigidity
         let xl = state.x_l[m];
         let xs = state.x_s[m];
         let fs = xl * xs;
-        let c_m = derivs.c_m[m];
 
-        let mut l_vals: [f64; 16] = [0.0; 16];
+        // Gradient term for each literal position
+        // For literal i, we need min over OTHER positions.
+        // Optimization: if i != min_idx, min_others = min_val (the overall min is still in the set).
+        //               if i == min_idx, min_others = second_min_val.
         for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
-            l_vals[i] = 0.5 * (1.0 - polarity * state.v[var_idx]);
-        }
-
-        let mut min_val = f64::MAX;
-        let mut min_idx = 0;
-        for i in 0..k {
-            if l_vals[i] < min_val {
-                min_val = l_vals[i];
-                min_idx = i;
-            }
-        }
-
-        // Gradient term: applies to ALL literal positions
-        for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
-            let mut min_others = f64::MAX;
-            for j in 0..k {
-                if j != i && l_vals[j] < min_others {
-                    min_others = l_vals[j];
-                }
-            }
+            let min_others = if i == min_idx {
+                second_min_val
+            } else {
+                min_val
+            };
             let g_nm = polarity * min_others;
             derivs.dv[var_idx] += fs * g_nm;
         }
