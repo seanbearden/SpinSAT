@@ -27,6 +27,21 @@ impl Default for Params {
     }
 }
 
+impl Params {
+    /// Auto-select zeta based on clause-to-variable ratio.
+    /// From the paper: ζ=10⁻¹ for high ratio (≥6), ζ=10⁻² for ratio≈5, ζ=10⁻³ near α_r≈4.27.
+    pub fn with_auto_zeta(mut self, ratio: f64) -> Self {
+        self.zeta = if ratio >= 6.0 {
+            1e-1
+        } else if ratio >= 5.0 {
+            1e-2
+        } else {
+            1e-3
+        };
+        self
+    }
+}
+
 /// DMM state: voltages and memory variables.
 pub struct DmmState {
     /// Voltage for each variable, v_n ∈ [-1, 1]
@@ -37,6 +52,12 @@ pub struct DmmState {
     pub x_l: Vec<f64>,
     /// Maximum value for x_l
     pub max_xl: f64,
+    /// Per-clause alpha_m for competition heuristic
+    pub alpha_m: Vec<f64>,
+    /// Integration time (sum of dt)
+    pub t: f64,
+    /// Time of last α_m adjustment
+    pub last_alpha_adjust_t: f64,
 }
 
 impl DmmState {
@@ -45,7 +66,25 @@ impl DmmState {
         let n = formula.num_vars;
         let m = formula.num_clauses();
 
-        // Simple xorshift64 PRNG for reproducibility without dependencies
+        let v = Self::random_voltages(n, seed);
+        let x_s: Vec<f64> = vec![0.0; m];
+        let x_l: Vec<f64> = vec![1.0; m];
+        let max_xl = 1e4 * (m as f64);
+        let alpha_m = vec![5.0; m]; // initially = α = 5
+
+        DmmState {
+            v,
+            x_s,
+            x_l,
+            max_xl,
+            alpha_m,
+            t: 0.0,
+            last_alpha_adjust_t: 0.0,
+        }
+    }
+
+    /// Generate random voltages in [-1, 1] using xorshift64.
+    fn random_voltages(n: usize, seed: u64) -> Vec<f64> {
         let mut rng_state = seed;
         let mut rand_f64 = || -> f64 {
             rng_state ^= rng_state << 13;
@@ -53,18 +92,7 @@ impl DmmState {
             rng_state ^= rng_state << 17;
             (rng_state as f64) / (u64::MAX as f64)
         };
-
-        let v: Vec<f64> = (0..n).map(|_| 1.0 - 2.0 * rand_f64()).collect();
-        let x_s: Vec<f64> = vec![0.0; m]; // Will be initialized to C_m in first step
-        let x_l: Vec<f64> = vec![1.0; m];
-        let max_xl = 1e4 * (m as f64);
-
-        DmmState {
-            v,
-            x_s,
-            x_l,
-            max_xl,
-        }
+        (0..n).map(|_| 1.0 - 2.0 * rand_f64()).collect()
     }
 
     /// Initialize x_s to the clause constraint values (matching MATLAB InitializeVariables).
@@ -73,10 +101,56 @@ impl DmmState {
             self.x_s[m_idx] = clause_constraint(formula, m_idx, &self.v);
         }
     }
+
+    /// Restart with new random voltages, reset memories.
+    /// Keeps alpha_m (learned clause difficulty) across restarts.
+    pub fn restart(&mut self, formula: &Formula, seed: u64) {
+        let n = formula.num_vars;
+        let m = formula.num_clauses();
+
+        self.v = Self::random_voltages(n, seed);
+        self.x_s = vec![0.0; m];
+        self.x_l = vec![1.0; m];
+        self.t = 0.0;
+        self.last_alpha_adjust_t = 0.0;
+        self.init_short_memory(formula);
+    }
+
+    /// Per-clause α_m adjustment heuristic (paper Supplementary II.E).
+    /// Called every 10⁴ time units.
+    pub fn adjust_alpha_m(&mut self) {
+        let m = self.x_l.len();
+        if m == 0 {
+            return;
+        }
+
+        // Compute median of x_l values
+        let mut sorted_xl: Vec<f64> = self.x_l.clone();
+        sorted_xl.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = sorted_xl[m / 2];
+
+        for i in 0..m {
+            if self.x_l[i] > median {
+                self.alpha_m[i] *= 1.1;
+            } else {
+                self.alpha_m[i] *= 0.9;
+            }
+            // Clamp α_m ≥ 1
+            if self.alpha_m[i] < 1.0 {
+                self.alpha_m[i] = 1.0;
+            }
+            // If x_l hits max, reset both
+            if self.x_l[i] >= self.max_xl {
+                self.x_l[i] = 1.0;
+                self.alpha_m[i] = 1.0;
+            }
+        }
+
+        self.last_alpha_adjust_t = self.t;
+    }
 }
 
 /// Compute clause constraint C_m (Eq. 1).
-/// C_m = ½ min_k [(1 - q_{k,m} · v_k)] over all literals in clause m.
 #[inline]
 pub fn clause_constraint(formula: &Formula, m: usize, v: &[f64]) -> f64 {
     let clause = formula.clause(m);
@@ -110,8 +184,7 @@ impl Derivatives {
 }
 
 /// Compute all derivatives for the DMM system (Eqs. 2-6).
-///
-/// This is the hot path — called once per integration step.
+/// Uses per-clause alpha_m instead of global alpha for long-term memory.
 pub fn compute_derivatives(
     formula: &Formula,
     state: &DmmState,
@@ -125,123 +198,34 @@ pub fn compute_derivatives(
         *d = 0.0;
     }
 
+    // First pass: compute C_m and memory derivatives
     for m in 0..num_clauses {
         let clause = formula.clause(m);
         let k = clause.len();
 
-        // Compute per-literal values: L_k = ½(1 - q_k · v_k)
-        // and find the minimum (determines C_m and which literal is "closest")
-
-        // Find the index of the literal with minimum L value (σ_m)
-        let mut min_val = f64::MAX;
-        let mut min_idx = 0;
-        let mut second_min_val; // min over other literals (for gradient)
-
-        // For k-SAT we need: C_m, which literal achieves the min, and min over others
-        // We compute L values and track indices
-        // For small k (3-8), a simple loop is efficient
-
-        // Compute all L values
-        let mut l_vals: [f64; 16] = [0.0; 16]; // support up to 16-SAT
+        let mut l_vals: [f64; 16] = [0.0; 16];
         for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
             l_vals[i] = 0.5 * (1.0 - polarity * state.v[var_idx]);
         }
 
-        // Find minimum
+        let mut min_val = f64::MAX;
         for i in 0..k {
             if l_vals[i] < min_val {
                 min_val = l_vals[i];
-                min_idx = i;
             }
         }
 
-        // C_m = min of L values (already multiplied by 0.5)
         let c_m = min_val;
         derivs.c_m[m] = c_m;
 
-        // Short-term memory derivative (Eq. 3): ẋ_{s,m} = β(x_{s,m} + ε)(C_m - γ)
+        // Short-term memory derivative (Eq. 3)
         derivs.dx_s[m] = params.beta * (state.x_s[m] + params.epsilon) * (c_m - params.gamma);
 
-        // Long-term memory derivative (Eq. 4): ẋ_{l,m} = α(C_m - δ)
-        derivs.dx_l[m] = params.alpha * (c_m - params.delta);
-
-        // Voltage derivatives (Eq. 2):
-        // v̇_n = Σ_m [ x_l,m · x_s,m · G_{n,m} + (1 + ζ·x_l,m)·(1 - x_s,m) · R_{n,m} ]
-
-        let xl = state.x_l[m];
-        let xs = state.x_s[m];
-        let fs = xl * xs; // gradient weight
-        let rigidity_weight = (1.0 + params.zeta * xl) * (1.0 - xs);
-
-        // For each literal position in this clause:
-        for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
-            if i == min_idx {
-                // This literal achieves the minimum → rigidity term applies
-                // R_{n,m} = ½(q_{n,m} - v_n)
-                let r_nm = 0.5 * (polarity - state.v[var_idx]);
-                derivs.dv[var_idx] += rigidity_weight * c_m * r_nm;
-            } else {
-                // Gradient-like term for non-minimum literals
-                // G_{n,m} = ½ · q_{n,m} · min over OTHER literals (excluding n)
-                // The "min over others" when n is not the minimum literal
-                // is just c_m (the overall min), since removing a non-min literal
-                // doesn't change the min.
-
-                // But we need min over literals OTHER than n.
-                // If n is not the min literal, then min over others = c_m (min is still there).
-                // So G_{n,m} = ½ · q_{n,m} · (2 · c_m) = q_{n,m} · c_m
-                // Wait — let me re-derive from Eq. 5:
-                // G_{n,m} = ½ · q_{n,m} · min_{j≠n}[(1 - q_j·v_j)]
-                // The min over j≠n: if n is NOT the overall min, then the overall min is
-                // still in the set, so min_{j≠n} = 2·c_m (since c_m = ½ · min of (1-q·v)).
-
-                // Actually from the MATLAB code (derivative.m):
-                // gradient = MN{4}*(c1.*fs) where c1 = min(L22, L23) for literal position 4
-                // So for literal at position i, the gradient uses min of L values at OTHER positions.
-
-                // Find min of L values excluding position i
-                second_min_val = f64::MAX;
-                for j in 0..k {
-                    if j != i && l_vals[j] < second_min_val {
-                        second_min_val = l_vals[j];
-                    }
-                }
-
-                // G_{n,m} = ½ · q_{n,m} · min_{j≠n}(1 - q_j·v_j)
-                // = ½ · q_{n,m} · (2 · second_min_val)  [since l_vals already has the ½]
-                // = q_{n,m} · second_min_val
-                // But wait, l_vals[j] = ½(1 - q_j·v_j), so min_{j≠n}(1-q_j·v_j) = 2·second_min_val
-                // G_{n,m} = ½ · polarity · 2·second_min_val = polarity · second_min_val
-                let g_nm = polarity * second_min_val;
-
-                derivs.dv[var_idx] += fs * g_nm;
-            }
-        }
-
-        // The rigidity term contribution for the min literal also includes the gradient part
-        // from clauses where it is NOT the minimum. But wait — from Eq. 2 and the MATLAB,
-        // the gradient term is x_l·x_s·G and rigidity is (1+ζ·x_l)·(1-x_s)·R.
-        // For the min literal: G_{n,m} = 0 (from Eq. 5 definition, when the minimum
-        // results in G=0 because the min over others might still give a value).
-        //
-        // Actually re-reading the paper and MATLAB more carefully:
-        // In derivative.m, the gradient term for literal position 4 uses c1 = min(L22, L23),
-        // which is the min over the OTHER two positions. This is computed for ALL positions,
-        // including the one that achieves the overall minimum.
-        //
-        // The rigidity term (temp2) uses cmp1/cmp2/cmp3 which select ONLY the position
-        // that achieves the minimum, and applies ttd = C3 * (1 - x_fast).
-        //
-        // Let me fix: gradient applies to ALL literals, rigidity only to the min literal.
-
-        // CORRECTION: re-do the voltage derivatives properly
+        // Long-term memory derivative (Eq. 4) — uses per-clause alpha_m
+        derivs.dx_l[m] = state.alpha_m[m] * (c_m - params.delta);
     }
 
-    // Clear and recompute voltage derivatives with correct formulation
-    for d in derivs.dv.iter_mut() {
-        *d = 0.0;
-    }
-
+    // Second pass: voltage derivatives
     for m in 0..num_clauses {
         let clause = formula.clause(m);
         let k = clause.len();
@@ -251,13 +235,11 @@ pub fn compute_derivatives(
         let fs = xl * xs;
         let c_m = derivs.c_m[m];
 
-        // Compute L values
         let mut l_vals: [f64; 16] = [0.0; 16];
         for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
             l_vals[i] = 0.5 * (1.0 - polarity * state.v[var_idx]);
         }
 
-        // Find which literal achieves the minimum
         let mut min_val = f64::MAX;
         let mut min_idx = 0;
         for i in 0..k {
@@ -269,14 +251,12 @@ pub fn compute_derivatives(
 
         // Gradient term: applies to ALL literal positions
         for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
-            // min over OTHER literals
             let mut min_others = f64::MAX;
             for j in 0..k {
                 if j != i && l_vals[j] < min_others {
                     min_others = l_vals[j];
                 }
             }
-            // G_{n,m} = polarity * min_others (with ½ already in l_vals)
             let g_nm = polarity * min_others;
             derivs.dv[var_idx] += fs * g_nm;
         }
@@ -295,6 +275,12 @@ pub fn is_solved(c_m: &[f64]) -> bool {
     c_m.iter().all(|&c| c < 0.5)
 }
 
+/// Count unsatisfied clauses.
+#[inline]
+pub fn count_unsat(c_m: &[f64]) -> usize {
+    c_m.iter().filter(|&&c| c >= 0.5).count()
+}
+
 /// Extract Boolean assignment from voltages by thresholding.
 pub fn extract_assignment(v: &[f64]) -> Vec<bool> {
     v.iter().map(|&val| val > 0.0).collect()
@@ -307,14 +293,11 @@ mod tests {
 
     #[test]
     fn test_clause_constraint() {
-        // Clause: (x1 ∨ ¬x2 ∨ x3), polarity = [+1, -1, +1]
         let f = Formula::new(3, vec![vec![1, -2, 3]]);
-        // v = [1.0, -1.0, 0.5] → all literals satisfied
         let v = vec![1.0, -1.0, 0.5];
         let c = clause_constraint(&f, 0, &v);
         assert!(c < 0.5, "Clause should be satisfied, C_m = {}", c);
 
-        // v = [-1.0, 1.0, -1.0] → all literals unsatisfied
         let v2 = vec![-1.0, 1.0, -1.0];
         let c2 = clause_constraint(&f, 0, &v2);
         assert!(c2 >= 0.5, "Clause should be unsatisfied, C_m = {}", c2);
@@ -325,5 +308,21 @@ mod tests {
         let v = vec![0.5, -0.3, 0.0, 0.9, -0.1];
         let a = extract_assignment(&v);
         assert_eq!(a, vec![true, false, false, true, false]);
+    }
+
+    #[test]
+    fn test_adjust_alpha_m() {
+        let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3], vec![1, 2, 3]]);
+        let mut state = DmmState::new(&f, 42);
+        // Simulate different x_l values — clause 0 much higher than others
+        state.x_l[0] = 100.0;
+        state.x_l[1] = 1.0;
+        state.x_l[2] = 2.0;
+        // median of [100, 1, 2] sorted = [1, 2, 100], median = 2
+        state.adjust_alpha_m();
+        // Clause 0 (x_l=100 > median=2) → α_m should increase
+        assert!(state.alpha_m[0] > 5.0, "alpha_m[0]={}", state.alpha_m[0]);
+        // Clause 1 (x_l=1 ≤ median=2) → α_m should decrease
+        assert!(state.alpha_m[1] < 5.0, "alpha_m[1]={}", state.alpha_m[1]);
     }
 }

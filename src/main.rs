@@ -8,19 +8,69 @@ use std::env;
 use std::process;
 
 use dmm::Params;
-use solver::{solve, SolveResult};
+use solver::{solve, SolveResult, SolverConfig};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        eprintln!("Usage: spinsat <instance.cnf>");
-        process::exit(1);
+
+    let mut cnf_path: Option<String> = None;
+    let mut timeout: f64 = 5000.0;
+    let mut seed: u64 = 42;
+    let mut zeta: Option<f64> = None;
+    let mut auto_zeta = true;
+
+    // Parse arguments
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--timeout" | "-t" => {
+                i += 1;
+                timeout = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(5000.0);
+            }
+            "--seed" | "-s" => {
+                i += 1;
+                seed = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(42);
+            }
+            "--zeta" | "-z" => {
+                i += 1;
+                zeta = args.get(i).and_then(|s| s.parse().ok());
+                auto_zeta = false;
+            }
+            "--no-auto-zeta" => {
+                auto_zeta = false;
+            }
+            "--help" | "-h" => {
+                eprintln!("Usage: spinsat [OPTIONS] <instance.cnf>");
+                eprintln!();
+                eprintln!("Options:");
+                eprintln!("  -t, --timeout <secs>   Timeout in seconds (default: 5000)");
+                eprintln!("  -s, --seed <n>         Initial random seed (default: 42)");
+                eprintln!("  -z, --zeta <val>       Learning rate (default: auto by ratio)");
+                eprintln!("      --no-auto-zeta     Disable auto zeta selection");
+                eprintln!("  -h, --help             Show this help");
+                process::exit(0);
+            }
+            arg if !arg.starts_with('-') => {
+                cnf_path = Some(arg.to_string());
+            }
+            _ => {
+                eprintln!("Unknown option: {}", args[i]);
+                process::exit(1);
+            }
+        }
+        i += 1;
     }
 
-    let cnf_path = &args[1];
+    let cnf_path = match cnf_path {
+        Some(p) => p,
+        None => {
+            eprintln!("Usage: spinsat [OPTIONS] <instance.cnf>");
+            process::exit(1);
+        }
+    };
 
     // Parse DIMACS CNF
-    let formula = match parser::parse_dimacs(cnf_path) {
+    let formula = match parser::parse_dimacs(&cnf_path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("c Error parsing {}: {}", cnf_path, e);
@@ -29,22 +79,35 @@ fn main() {
         }
     };
 
-    eprintln!("c SpinSAT v0.1.0 — DMM-based SAT solver");
-    eprintln!(
-        "c Instance: {} variables, {} clauses",
-        formula.num_vars,
-        formula.num_clauses()
-    );
+    let ratio = formula.num_clauses() as f64 / formula.num_vars as f64;
 
     // Set parameters
-    let params = Params::default();
+    let mut params = Params::default();
+    if auto_zeta {
+        params = params.with_auto_zeta(ratio);
+    }
+    if let Some(z) = zeta {
+        params.zeta = z;
+    }
 
-    // Competition timeout
-    let timeout = 5000.0;
+    eprintln!("c SpinSAT v0.2.0 — DMM-based SAT solver");
+    eprintln!(
+        "c Instance: {} variables, {} clauses (ratio {:.2})",
+        formula.num_vars,
+        formula.num_clauses(),
+        ratio,
+    );
+    eprintln!("c Parameters: zeta={:.0e}, seed={}", params.zeta, seed);
+
+    // Configure solver
+    let config = SolverConfig {
+        timeout_secs: timeout,
+        initial_seed: seed,
+        ..Default::default()
+    };
 
     // Solve
-    let seed = 42;
-    match solve(&formula, &params, timeout, seed) {
+    match solve(&formula, &params, &config) {
         SolveResult::Sat(assignment) => {
             println!("s SATISFIABLE");
             print_assignment(&assignment);
@@ -56,7 +119,6 @@ fn main() {
 }
 
 /// Print assignment in SAT competition format.
-/// v 1 -2 3 -4 5 0
 fn print_assignment(assignment: &[bool]) {
     let mut line = String::from("v ");
     for (i, &val) in assignment.iter().enumerate() {
@@ -64,7 +126,6 @@ fn print_assignment(assignment: &[bool]) {
         let lit = if val { var_num } else { -var_num };
 
         let token = format!("{}", lit);
-        // SAT competition: max 4096 chars per value line
         if line.len() + token.len() + 2 > 4090 {
             line.push('0');
             println!("{}", line);

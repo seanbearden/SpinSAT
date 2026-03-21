@@ -5,6 +5,8 @@ use crate::formula::Formula;
 ///
 /// Matches the paper's integration scheme (SeanMethod.m):
 /// dt = max(min(dt_max, max_v / max(|dV|)), dt_min)
+///
+/// Returns the actual dt used.
 pub fn euler_step(
     formula: &Formula,
     state: &mut DmmState,
@@ -41,6 +43,14 @@ pub fn euler_step(
         state.v[n] = (state.v[n] + derivs.dv[n] * actual_dt).clamp(-1.0, 1.0);
     }
 
+    // Track integration time
+    state.t += actual_dt;
+
+    // Per-clause α_m adjustment every 10⁴ time units
+    if state.t - state.last_alpha_adjust_t >= 1e4 {
+        state.adjust_alpha_m();
+    }
+
     actual_dt
 }
 
@@ -51,7 +61,6 @@ mod tests {
 
     #[test]
     fn test_euler_step_runs() {
-        // Simple formula: (x1 ∨ x2) ∧ (¬x1 ∨ x2)
         let f = Formula::new(2, vec![vec![1, 2], vec![-1, 2]]);
         let params = Params::default();
         let mut state = DmmState::new(&f, 42);
@@ -60,8 +69,8 @@ mod tests {
 
         let dt = euler_step(&f, &mut state, &params, &mut derivs, -1.0);
         assert!(dt > 0.0);
+        assert!(state.t > 0.0);
 
-        // Voltages should still be in bounds
         for &v in &state.v {
             assert!((-1.0..=1.0).contains(&v));
         }
