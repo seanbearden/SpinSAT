@@ -1,6 +1,6 @@
 [package]
 name = "spinsat"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "A dynamic SAT solver based on digital memcomputing machines"
 license = "MIT"
