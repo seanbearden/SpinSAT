@@ -101,4 +101,50 @@ mod tests {
         assert_eq!(formula.num_clauses(), 1);
         assert_eq!(formula.clause_width(0), 3);
     }
+
+    #[test]
+    fn test_parse_no_header() {
+        let cnf = "1 -2 3 0\n";
+        let f = write_temp_cnf(cnf);
+        let result = parse_dimacs(f.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_comments_only() {
+        let cnf = "c just comments\nc nothing here\n";
+        let f = write_temp_cnf(cnf);
+        let result = parse_dimacs(f.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_with_percent_lines() {
+        let cnf = "p cnf 2 1\n1 2 0\n%\n0\n";
+        let f = write_temp_cnf(cnf);
+        let formula = parse_dimacs(f.path()).unwrap();
+        assert_eq!(formula.num_clauses(), 1);
+    }
+
+    #[test]
+    fn test_parse_nonexistent_file() {
+        let result = parse_dimacs("/nonexistent/path/file.cnf");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_empty_file() {
+        let f = write_temp_cnf("");
+        let result = parse_dimacs(f.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_clause_not_terminated() {
+        let cnf = "p cnf 3 1\n1 -2 3\n";
+        let f = write_temp_cnf(cnf);
+        let formula = parse_dimacs(f.path()).unwrap();
+        // Should still parse the unterminated clause
+        assert_eq!(formula.num_clauses(), 1);
+    }
 }

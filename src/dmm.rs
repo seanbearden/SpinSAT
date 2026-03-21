@@ -304,15 +304,94 @@ mod tests {
     fn test_adjust_alpha_m() {
         let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3], vec![1, 2, 3]]);
         let mut state = DmmState::new(&f, 42);
-        // Simulate different x_l values — clause 0 much higher than others
         state.x_l[0] = 100.0;
         state.x_l[1] = 1.0;
         state.x_l[2] = 2.0;
-        // median of [100, 1, 2] sorted = [1, 2, 100], median = 2
         state.adjust_alpha_m();
-        // Clause 0 (x_l=100 > median=2) → α_m should increase
         assert!(state.alpha_m[0] > 5.0, "alpha_m[0]={}", state.alpha_m[0]);
-        // Clause 1 (x_l=1 ≤ median=2) → α_m should decrease
         assert!(state.alpha_m[1] < 5.0, "alpha_m[1]={}", state.alpha_m[1]);
+    }
+
+    #[test]
+    fn test_adjust_alpha_m_xl_at_max_resets() {
+        let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3], vec![1, 2, 3]]);
+        let mut state = DmmState::new(&f, 42);
+        state.x_l[0] = state.max_xl; // at max
+        state.adjust_alpha_m();
+        assert_eq!(state.x_l[0], 1.0, "x_l should reset to 1");
+        assert_eq!(state.alpha_m[0], 1.0, "alpha_m should reset to 1");
+    }
+
+    #[test]
+    fn test_init_short_memory() {
+        let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3]]);
+        let mut state = DmmState::new(&f, 42);
+        state.init_short_memory(&f);
+        for &xs in &state.x_s {
+            assert!(xs >= 0.0 && xs <= 1.0, "x_s={} out of range", xs);
+        }
+    }
+
+    #[test]
+    fn test_restart_preserves_alpha_m() {
+        let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3]]);
+        let mut state = DmmState::new(&f, 42);
+        state.alpha_m[0] = 10.0;
+        state.alpha_m[1] = 0.5;
+        state.restart(&f, 99);
+        // alpha_m should NOT be reset by restart
+        // (restart keeps learned difficulty)
+        assert_eq!(state.x_l, vec![1.0; 2], "x_l should reset");
+        assert_eq!(state.t, 0.0, "t should reset");
+    }
+
+    #[test]
+    fn test_count_unsat() {
+        let c_m = vec![0.1, 0.6, 0.3, 0.9, 0.4];
+        assert_eq!(count_unsat(&c_m), 2); // 0.6 and 0.9 are >= 0.5
+    }
+
+    #[test]
+    fn test_is_solved() {
+        assert!(is_solved(&[0.1, 0.2, 0.3, 0.49]));
+        assert!(!is_solved(&[0.1, 0.2, 0.5, 0.49]));
+        assert!(is_solved(&[]));
+    }
+
+    #[test]
+    fn test_auto_zeta() {
+        let p1 = Params::default().with_auto_zeta(6.5);
+        assert_eq!(p1.zeta, 1e-1);
+
+        let p2 = Params::default().with_auto_zeta(5.0);
+        assert!((p2.zeta - 1e-2).abs() < 1e-6);
+
+        let p3 = Params::default().with_auto_zeta(4.0);
+        assert_eq!(p3.zeta, 1e-3);
+
+        // Interpolation range
+        let p4 = Params::default().with_auto_zeta(5.5);
+        assert!(p4.zeta > 1e-2 && p4.zeta < 1e-1);
+    }
+
+    #[test]
+    fn test_compute_derivatives_basic() {
+        let f = Formula::new(3, vec![vec![1, -2, 3]]);
+        let params = Params::default();
+        let state = DmmState::new(&f, 42);
+        let mut derivs = Derivatives::new(f.num_vars, f.num_clauses());
+        compute_derivatives(&f, &state, &params, &mut derivs);
+        // C_m should be computed
+        assert!(derivs.c_m[0] >= 0.0 && derivs.c_m[0] <= 1.0);
+        // Derivatives should be finite
+        for &d in &derivs.dv {
+            assert!(d.is_finite(), "dv not finite: {}", d);
+        }
+        for &d in &derivs.dx_s {
+            assert!(d.is_finite(), "dx_s not finite: {}", d);
+        }
+        for &d in &derivs.dx_l {
+            assert!(d.is_finite(), "dx_l not finite: {}", d);
+        }
     }
 }
