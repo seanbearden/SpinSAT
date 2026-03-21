@@ -47,6 +47,10 @@ fn main() {
             "--no-auto-zeta" => {
                 auto_zeta = false;
             }
+            "--version" | "-V" => {
+                println!("spinsat {}", env!("CARGO_PKG_VERSION"));
+                process::exit(0);
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: spinsat [OPTIONS] <instance.cnf>");
                 eprintln!();
@@ -56,6 +60,7 @@ fn main() {
                 eprintln!("  -m, --method <name>    Strategy: euler, trapezoid, rk4, alternate, probe, auto (default: auto)");
                 eprintln!("  -z, --zeta <val>       Learning rate (default: auto by ratio)");
                 eprintln!("      --no-auto-zeta     Disable auto zeta selection");
+                eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
                 process::exit(0);
             }
@@ -99,7 +104,7 @@ fn main() {
         params.zeta = z;
     }
 
-    eprintln!("c SpinSAT v0.4.0 — DMM-based SAT solver");
+    eprintln!("c SpinSAT v{} — DMM-based SAT solver", env!("CARGO_PKG_VERSION"));
     eprintln!(
         "c Instance: {} variables, {} clauses (ratio {:.2})",
         formula.num_vars,

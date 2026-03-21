@@ -7,3 +7,12 @@ benchmarks/generated/
 scripts/check_sat
 scripts/gratchk
 *.mat
+benchmarks.db
+results/
+
+# Gas Town (added by gt)
+.runtime/
+.claude/
+.logs/
+__pycache__/
+state.json
