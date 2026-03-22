@@ -18,6 +18,7 @@ fn main() {
     let mut do_preprocess = true;
     let mut cdcl_fallback = false;
     let mut proof_path: Option<String> = None;
+    let mut detect_unsat = false;
 
     // Parse arguments
     let mut i = 1;
@@ -65,6 +66,9 @@ fn main() {
                 i += 1;
                 proof_path = args.get(i).cloned();
             }
+            "--detect-unsat" => {
+                detect_unsat = true;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: spinsat [OPTIONS] <instance.cnf>");
                 eprintln!();
@@ -77,6 +81,7 @@ fn main() {
                 eprintln!("      --no-preprocess    Skip CNF preprocessing");
                 eprintln!("      --cdcl-fallback    Enable CaDiCaL CDCL fallback for UNSAT detection");
                 eprintln!("      --proof <path>     Write DRAT proof to file (requires --cdcl-fallback)");
+                eprintln!("      --detect-unsat     Enable UNSAT signal detection with CaDiCaL handoff");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
                 process::exit(0);
@@ -185,6 +190,7 @@ fn main() {
         strategy,
         cdcl_fallback,
         proof_path,
+        enable_unsat_detection: detect_unsat,
         ..Default::default()
     };
 

@@ -4,6 +4,7 @@ use crate::cdcl::{CdclResult, CdclSolver};
 use crate::dmm::{count_unsat, extract_assignment, is_solved, Derivatives, DmmState, Params};
 use crate::formula::Formula;
 use crate::integrator::{integration_step, Method, ScratchBuffers};
+use crate::unsat_signal::{SignalConfig, SignalKind, UnsatSignalDetector};
 
 /// Result of a solve attempt.
 pub enum SolveResult {
@@ -54,6 +55,14 @@ pub struct SolverConfig {
     pub cdcl_fallback: bool,
     /// Path for DRAT proof output (only used when cdcl_fallback is enabled).
     pub proof_path: Option<String>,
+    /// Enable UNSAT signal detection with CaDiCaL handoff.
+    /// When enabled, monitors DMM dynamics and hands off to CaDiCaL
+    /// when UNSAT indicator signals fire (before DMM budget exhaustion).
+    pub enable_unsat_detection: bool,
+    /// Configuration for UNSAT signal thresholds.
+    pub signal_config: SignalConfig,
+    /// CaDiCaL conflict budget per signal-triggered handoff attempt.
+    pub cdcl_conflict_budget: i32,
 }
 
 impl Default for SolverConfig {
@@ -68,6 +77,9 @@ impl Default for SolverConfig {
             probe_steps: 5000,
             cdcl_fallback: false,
             proof_path: None,
+            enable_unsat_detection: false,
+            signal_config: SignalConfig::default(),
+            cdcl_conflict_budget: 100_000,
         }
     }
 }
@@ -99,8 +111,15 @@ impl MethodStats {
     }
 }
 
+/// Result of a single restart attempt.
+struct AttemptResult {
+    best_unsat: usize,
+    wall_time: f64,
+    solution: Option<Vec<bool>>,
+    signal_fired: Option<SignalKind>,
+}
+
 /// Run one restart attempt with the given method.
-/// Returns (best_unsat_this_run, wall_time_this_run, solved_assignment_or_none).
 fn run_attempt(
     formula: &Formula,
     state: &mut DmmState,
@@ -112,12 +131,14 @@ fn run_attempt(
     timeout_deadline: f64,
     start: &Instant,
     max_steps: Option<u64>,
-) -> (usize, f64, Option<Vec<bool>>) {
+    mut signal_detector: Option<&mut UnsatSignalDetector>,
+) -> AttemptResult {
     let attempt_start = start.elapsed().as_secs_f64();
     let mut step: u64 = 0;
     let mut best_unsat = formula.num_clauses();
     let mut stagnation_counter: u32 = 0;
     let step_limit = max_steps.unwrap_or(u64::MAX);
+    let mut signal_fired: Option<SignalKind> = None;
 
     loop {
         integration_step(method, formula, state, params, derivs, scratch, -1.0);
@@ -126,11 +147,12 @@ fn run_attempt(
         if is_solved(&derivs.c_m) {
             let assignment = extract_assignment(&state.v);
             if formula.verify(&assignment) {
-                return (
-                    0,
-                    start.elapsed().as_secs_f64() - attempt_start,
-                    Some(assignment),
-                );
+                return AttemptResult {
+                    best_unsat: 0,
+                    wall_time: start.elapsed().as_secs_f64() - attempt_start,
+                    solution: Some(assignment),
+                    signal_fired: None,
+                };
             }
         }
 
@@ -155,11 +177,24 @@ fn run_attempt(
             if stagnation_counter >= config.stagnation_patience {
                 break;
             }
+
+            // Update UNSAT signal detector
+            if let Some(ref mut detector) = signal_detector {
+                if let Some(signal) = detector.update(state, &derivs.c_m) {
+                    signal_fired = Some(signal);
+                    break;
+                }
+            }
         }
     }
 
     let wall_time = start.elapsed().as_secs_f64() - attempt_start;
-    (best_unsat, wall_time, None)
+    AttemptResult {
+        best_unsat,
+        wall_time,
+        solution: None,
+        signal_fired,
+    }
 }
 
 /// Select which method to use for a given restart, based on strategy.
@@ -185,7 +220,6 @@ fn select_method(
             if probe_complete {
                 probe_winner.unwrap_or(Method::Euler)
             } else {
-                // During probe phase: restart 0 = Euler, restart 1 = Trapezoid
                 if restart_count == 0 {
                     Method::Euler
                 } else {
@@ -194,7 +228,6 @@ fn select_method(
             }
         }
         Strategy::Adaptive => {
-            // Need at least one attempt with each before comparing
             if euler_stats.restarts == 0 {
                 Method::Euler
             } else if trap_stats.restarts == 0 {
@@ -209,6 +242,30 @@ fn select_method(
                 }
             }
         }
+    }
+}
+
+/// Attempt CaDiCaL handoff with phase hints from DMM's best assignment.
+/// Returns Some(SolveResult) if CaDiCaL resolves it, None if budget exhausted.
+fn try_cdcl_handoff(
+    formula: &Formula,
+    best_assignment: &[bool],
+    conflict_budget: i32,
+) -> Option<SolveResult> {
+    let mut cdcl = CdclSolver::new(formula);
+    cdcl.set_phase_from_assignment(best_assignment);
+    cdcl.set_conflict_limit(conflict_budget);
+
+    match cdcl.solve() {
+        CdclResult::Sat(assignment) => {
+            if formula.verify(&assignment) {
+                Some(SolveResult::Sat(assignment))
+            } else {
+                None
+            }
+        }
+        CdclResult::Unsat => Some(SolveResult::Unsat),
+        CdclResult::Unknown => None,
     }
 }
 
@@ -227,6 +284,18 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
         ScratchBuffers::empty()
     };
 
+    // UNSAT signal detector
+    let mut signal_detector = if config.enable_unsat_detection {
+        Some(UnsatSignalDetector::new(
+            formula.num_vars,
+            formula.num_clauses(),
+            config.signal_config.clone(),
+        ))
+    } else {
+        None
+    };
+    let mut cdcl_handoff_count: u32 = 0;
+
     let mut restart_count: u32 = 0;
     let mut best_unsat_ever = formula.num_clauses();
     let mut best_voltages: Vec<f64> = state.v.clone();
@@ -237,7 +306,6 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
 
     // When CDCL fallback is enabled, reserve time for CaDiCaL
     let dmm_timeout = if config.cdcl_fallback {
-        // Give DMM 50% of the time budget, CaDiCaL gets the rest
         config.timeout_secs * 0.5
     } else {
         config.timeout_secs
@@ -267,7 +335,7 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
             None
         };
 
-        let (best_unsat, wall_time, solution) = run_attempt(
+        let attempt = run_attempt(
             formula,
             &mut state,
             params,
@@ -278,10 +346,11 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
             dmm_timeout,
             &start,
             max_steps,
+            signal_detector.as_mut(),
         );
 
         // Check if solved
-        if let Some(assignment) = solution {
+        if let Some(assignment) = attempt.solution {
             eprintln!(
                 "c Solved after {} restarts using {:?} (elapsed: {:.1}s)",
                 restart_count,
@@ -291,26 +360,73 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
             return SolveResult::Sat(assignment);
         }
 
+        // Handle UNSAT signal: hand off to CaDiCaL with conflict budget
+        if let Some(signal) = attempt.signal_fired {
+            cdcl_handoff_count += 1;
+            let best_assign = signal_detector.as_ref().unwrap().best_assignment().to_vec();
+            let summary = signal_detector.as_ref().unwrap().signal_summary();
+            eprintln!(
+                "c UNSAT signal {:?} fired (handoff #{}, elapsed: {:.1}s, {})",
+                signal,
+                cdcl_handoff_count,
+                start.elapsed().as_secs_f64(),
+                summary,
+            );
+
+            if let Some(result) =
+                try_cdcl_handoff(formula, &best_assign, config.cdcl_conflict_budget)
+            {
+                match &result {
+                    SolveResult::Sat(_) => {
+                        eprintln!(
+                            "c CaDiCaL found SAT (handoff #{}, elapsed: {:.1}s)",
+                            cdcl_handoff_count,
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+                    SolveResult::Unsat => {
+                        eprintln!(
+                            "c CaDiCaL proved UNSAT (handoff #{}, elapsed: {:.1}s)",
+                            cdcl_handoff_count,
+                            start.elapsed().as_secs_f64()
+                        );
+                    }
+                    SolveResult::Unknown => unreachable!(),
+                }
+                return result;
+            }
+
+            eprintln!(
+                "c CaDiCaL exhausted budget ({} conflicts), resuming DMM",
+                config.cdcl_conflict_budget
+            );
+
+            // Reset signal detector for next DMM phase
+            if let Some(ref mut detector) = signal_detector {
+                detector.reset_for_restart();
+            }
+        }
+
         // Track best voltages across all restarts
-        if best_unsat < best_unsat_ever {
-            best_unsat_ever = best_unsat;
+        if attempt.best_unsat < best_unsat_ever {
+            best_unsat_ever = attempt.best_unsat;
             best_voltages = state.v.clone();
         }
 
         // Update stats
         match method {
             Method::Euler => {
-                euler_stats.wall_time += wall_time;
+                euler_stats.wall_time += attempt.wall_time;
                 euler_stats.restarts += 1;
-                if best_unsat < euler_stats.best_unsat {
-                    euler_stats.best_unsat = best_unsat;
+                if attempt.best_unsat < euler_stats.best_unsat {
+                    euler_stats.best_unsat = attempt.best_unsat;
                 }
             }
             Method::Trapezoid => {
-                trap_stats.wall_time += wall_time;
+                trap_stats.wall_time += attempt.wall_time;
                 trap_stats.restarts += 1;
-                if best_unsat < trap_stats.best_unsat {
-                    trap_stats.best_unsat = best_unsat;
+                if attempt.best_unsat < trap_stats.best_unsat {
+                    trap_stats.best_unsat = attempt.best_unsat;
                 }
             }
             _ => {}
@@ -350,12 +466,17 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
             "c Restart {} {:?} (best unsat: {}, best ever: {}, elapsed: {:.1}s)",
             restart_count,
             method,
-            best_unsat,
+            attempt.best_unsat,
             best_unsat_ever,
             start.elapsed().as_secs_f64()
         );
 
         state.restart(formula, new_seed);
+
+        // Reset signal detector counters for new restart
+        if let Some(ref mut detector) = signal_detector {
+            detector.reset_for_restart();
+        }
     }
 
     // DMM exhausted its budget without finding SAT
@@ -484,8 +605,7 @@ mod tests {
         };
         match solve(&f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
-            SolveResult::Unsat => panic!("Should have found a solution"),
-            SolveResult::Unknown => panic!("Should have found a solution"),
+            SolveResult::Unsat | SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
 
@@ -500,8 +620,7 @@ mod tests {
         };
         match solve(&f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
-            SolveResult::Unsat => panic!("Should have found a solution"),
-            SolveResult::Unknown => panic!("Should have found a solution"),
+            SolveResult::Unsat | SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
 
@@ -516,8 +635,7 @@ mod tests {
         };
         match solve(&f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
-            SolveResult::Unsat => panic!("Should have found a solution"),
-            SolveResult::Unknown => panic!("Should have found a solution"),
+            SolveResult::Unsat | SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
 
@@ -621,7 +739,6 @@ mod tests {
 
     #[test]
     fn test_cdcl_fallback_sat() {
-        // Easy SAT formula — DMM should solve it, but test the fallback path
         let f = easy_formula();
         let params = Params::default();
         let config = SolverConfig {
@@ -639,7 +756,6 @@ mod tests {
 
     #[test]
     fn test_cdcl_fallback_unsat() {
-        // Trivially UNSAT: (x1) AND (NOT x1)
         let f = Formula::new(1, vec![vec![1], vec![-1]]);
         let params = Params::default();
         let config = SolverConfig {
@@ -652,7 +768,7 @@ mod tests {
             ..Default::default()
         };
         match solve(&f, &params, &config) {
-            SolveResult::Unsat => {} // expected
+            SolveResult::Unsat => {}
             SolveResult::Sat(_) => panic!("UNSAT formula should not be SAT"),
             SolveResult::Unknown => panic!("CDCL fallback should prove UNSAT"),
         }
@@ -660,7 +776,6 @@ mod tests {
 
     #[test]
     fn test_cdcl_fallback_harder_unsat() {
-        // UNSAT: (x1 OR x2) AND (NOT x1 OR x2) AND (x1 OR NOT x2) AND (NOT x1 OR NOT x2)
         let f = Formula::new(2, vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]]);
         let params = Params::default();
         let config = SolverConfig {
@@ -673,9 +788,56 @@ mod tests {
             ..Default::default()
         };
         match solve(&f, &params, &config) {
-            SolveResult::Unsat => {} // expected
+            SolveResult::Unsat => {}
             SolveResult::Sat(_) => panic!("UNSAT formula should not be SAT"),
             SolveResult::Unknown => panic!("CDCL fallback should prove UNSAT"),
+        }
+    }
+
+    #[test]
+    fn test_solve_unsat_with_signal_detection() {
+        // Trivially unsatisfiable: (x1) AND (NOT x1)
+        let f = Formula::new(1, vec![vec![1], vec![-1]]);
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            max_restarts: 5,
+            stagnation_check_interval: 10,
+            stagnation_patience: 3,
+            enable_unsat_detection: true,
+            signal_config: SignalConfig {
+                warmup_checks: 1,
+                stagnation_patience: 2,
+                xl_reset_fraction: 0.5,
+                alpha_m_mean_threshold: 50.0,
+                alpha_divergence_patience: 5,
+                assignment_stability_patience: 3,
+            },
+            cdcl_conflict_budget: 10_000,
+            ..Default::default()
+        };
+        match solve(&f, &params, &config) {
+            SolveResult::Unsat => {} // expected — CaDiCaL proves UNSAT
+            SolveResult::Sat(_) => panic!("Should not find SAT for UNSAT formula"),
+            SolveResult::Unknown => {} // acceptable if signal doesn't fire in time
+        }
+    }
+
+    #[test]
+    fn test_solve_sat_with_signal_detection_enabled() {
+        // SAT formula with detection enabled — should still find SAT
+        let f = easy_formula();
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            enable_unsat_detection: true,
+            signal_config: SignalConfig::default(),
+            ..Default::default()
+        };
+        match solve(&f, &params, &config) {
+            SolveResult::Sat(a) => assert!(f.verify(&a)),
+            SolveResult::Unsat => panic!("Should not prove UNSAT for SAT formula"),
+            SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
 }
