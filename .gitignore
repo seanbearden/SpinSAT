@@ -8,7 +8,6 @@ scripts/check_sat
 scripts/gratchk
 *.mat
 benchmarks.db
-!docs/dashboard/benchmarks.db
 results/
 
 # Gas Town (added by gt)
