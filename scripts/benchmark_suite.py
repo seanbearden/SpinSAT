@@ -604,6 +604,36 @@ def cloud_run(args, instances, suite_name):
     print_summary(results)
     print(f"Results saved to: {fpath}")
 
+    # Record to DB if --record
+    if args.record:
+        env = results.get("environment", {})
+        solver_version = detect_solver_version(
+            str(PROJECT_ROOT / "target" / "release" / "spinsat")
+        )
+        git_commit, git_dirty = detect_git_info()
+        run_metadata = {
+            "run_id": run_id,
+            "solver_version": solver_version,
+            "git_commit": git_commit,
+            "git_dirty": git_dirty,
+            "hardware": f"GCP {env.get('machine_type', 'unknown')} ({env.get('cpu_platform', 'unknown')})",
+            "rust_version": detect_rust_version(),
+            "timestamp": results.get("timestamp", datetime.now(timezone.utc).isoformat()),
+            "notes": f"cloud run: {env.get('zone', '')}, spot={env.get('spot', '')}, parallelism={env.get('parallelism', '')}",
+        }
+        # Pick up strategy from first result
+        for inst in results.get("instances", []):
+            r = inst.get("spinsat", {})
+            if r.get("strategy"):
+                run_metadata["strategy"] = r["strategy"]
+                run_metadata["integration_method"] = r.get("method_used")
+                break
+
+        recorded = record_to_db(results, "spinsat", run_metadata)
+        if recorded:
+            print(f"Recorded {recorded} results to {BENCHMARKS_DB}")
+            print(f"  Run ID: {run_metadata['run_id']}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="SpinSAT Benchmark Suite")
