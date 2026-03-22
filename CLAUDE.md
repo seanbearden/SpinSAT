@@ -145,31 +145,65 @@ SQLite database in project root (gitignored, distributed via GitHub Releases). C
 - **Competition reference**: SAT competition solve times for comparison
 - **Views**: `best_times`, `version_comparison`
 
+### Benchmarking Rules
+
+**ALWAYS gather competition reference results BEFORE running SpinSAT.** The entire point of benchmarking is comparison against competition solvers. Never record results for instances without known competition solve times.
+
+**Only benchmark against competition instances.** Generated/planted instances are for development smoke tests only — never record them to the DB.
+
+**Workflow — always in this order:**
+1. Query `competition_results` to find instances with known solve times
+2. Download those instances from GBD
+3. Run SpinSAT against them with `--record`
+4. Upload DB to release + redeploy dashboard
+
+### Competition Reference Data
+
+**Source**: SAT Competition 2022 Anniversary Track (imported into `competition_results` table)
+- 5,355 instances x 28 solvers = 149,940 reference results
+- Solvers include: Kissat, CaDiCaL, IsaSAT, SLIME, and variants
+- Data from: https://github.com/mathefuchs/al-for-sat-solver-benchmarking-data
+
+**Importing** (one-time setup, already done):
+```bash
+git clone --depth 1 https://github.com/mathefuchs/al-for-sat-solver-benchmarking-data /tmp/al-sat
+python3 scripts/import_competition_data.py --anni-csv /tmp/al-sat/gbd-data/anni-seq.csv --anni-db /tmp/al-sat/gbd-data/base.db
+python3 scripts/import_competition_data.py --status
+```
+
 ### Setup & Usage
 ```bash
 # Initialize DB (one-time, snapshots meta.db)
 python3 scripts/init_benchmarks_db.py
 
-# Download competition instances from GBD
-python3 scripts/download_competition_instances.py --list-tracks
-python3 scripts/download_competition_instances.py --track random_2002 --result sat --limit 20
+# Step 1: Find instances WITH competition reference data
+sqlite3 benchmarks.db "
+SELECT cr.instance_hash, if2.value, i.family, ROUND(MIN(cr.time_s), 2) as best_time
+FROM competition_results cr
+JOIN instances i ON cr.instance_hash = i.hash
+JOIN instance_files if2 ON i.hash = if2.hash
+WHERE cr.status = 'SAT'
+GROUP BY cr.instance_hash
+HAVING best_time BETWEEN 0.1 AND 60
+ORDER BY best_time LIMIT 30;
+"
 
-# Official recorded benchmark (auto-detects version, commit, hardware, params)
-python3 scripts/benchmark_suite.py --instances benchmarks/competition/random_2002/*.cnf --record --tag v0.4.1-competition
+# Step 2: Download those specific instances
+python3 scripts/download_competition_instances.py --hashes <hash1> <hash2> ... --output-dir benchmarks/competition/anni_2022
+
+# Step 3: Run SpinSAT and record
+python3 scripts/benchmark_suite.py --instances benchmarks/competition/anni_2022/*.cnf --record --force --tag v0.4.1-anni2022 --timeout 300
+
+# Step 4: Upload and redeploy dashboard
+gh release upload <tag> benchmarks.db --clobber
+gh workflow run "Deploy Dashboard"
 
 # Development run (JSON only, no DB recording)
 python3 scripts/benchmark_suite.py --suite tiny --solver spinsat
 
-# Import competition reference data (Anniversary Track: 5,355 instances x 28 solvers)
-git clone --depth 1 https://github.com/mathefuchs/al-for-sat-solver-benchmarking-data /tmp/al-sat
-python3 scripts/import_competition_data.py --anni-csv /tmp/al-sat/gbd-data/anni-seq.csv --anni-db /tmp/al-sat/gbd-data/base.db
-python3 scripts/import_competition_data.py --status
-
 # Refresh instance metadata from meta.db
 python3 scripts/init_benchmarks_db.py --refresh
 ```
-
-**Only benchmark against competition instances.** Generated/planted instances are for development smoke tests only — never record them to the DB.
 
 ### Auto-Detection (`--record` flag)
 The benchmark script auto-detects with zero manual input:
