@@ -246,4 +246,73 @@ mod tests {
             _ => {} // may return Unknown if limit hit, that's ok
         }
     }
+
+    #[test]
+    fn test_get_fixed_literals_after_sat() {
+        // Simple formula where CaDiCaL can fix variables via unit propagation
+        // (x1) AND (x1 OR x2) — x1 is forced true
+        let formula = Formula::new(2, vec![vec![1], vec![1, 2]]);
+        let mut cdcl = CdclSolver::new(&formula);
+        match cdcl.solve() {
+            CdclResult::Sat(_) => {
+                let fixed = cdcl.get_fixed_literals();
+                // x1 should be fixed to true (lit = 1)
+                assert!(fixed.contains(&1), "x1 should be fixed: {:?}", fixed);
+            }
+            _ => panic!("Expected SAT"),
+        }
+    }
+
+    #[test]
+    fn test_get_phases_as_voltages_after_sat() {
+        let formula = Formula::new(2, vec![vec![1, 2], vec![-1, 2]]);
+        let mut cdcl = CdclSolver::new(&formula);
+        match cdcl.solve() {
+            CdclResult::Sat(_) => {
+                let voltages = cdcl.get_phases_as_voltages();
+                assert!(voltages.is_some(), "Should return voltages after SAT");
+                let v = voltages.unwrap();
+                assert_eq!(v.len(), 2);
+                // Each voltage should be ±1.0
+                for &val in &v {
+                    assert!(val == 1.0 || val == -1.0, "Voltage should be ±1.0: {}", val);
+                }
+            }
+            _ => panic!("Expected SAT"),
+        }
+    }
+
+    #[test]
+    fn test_get_phases_as_voltages_returns_none_after_unsat() {
+        let formula = Formula::new(1, vec![vec![1], vec![-1]]);
+        let mut cdcl = CdclSolver::new(&formula);
+        match cdcl.solve() {
+            CdclResult::Unsat => {
+                let voltages = cdcl.get_phases_as_voltages();
+                assert!(voltages.is_none(), "Should return None after UNSAT");
+            }
+            _ => panic!("Expected UNSAT"),
+        }
+    }
+
+    #[test]
+    fn test_with_proof_constructor() {
+        // Verify that with_proof creates a solver that works correctly
+        let formula = Formula::new(2, vec![vec![1, 2], vec![-1, 2]]);
+        let proof_path = std::env::temp_dir().join("cdcl_test_proof.drat");
+        let mut cdcl = CdclSolver::with_proof(
+            &formula,
+            Some(proof_path.to_str().unwrap()),
+        );
+        match cdcl.solve() {
+            CdclResult::Sat(assignment) => {
+                assert!(formula.verify(&assignment));
+            }
+            _ => panic!("Expected SAT"),
+        }
+        cdcl.close_proof();
+        // Proof file should exist (even for SAT, it records the search)
+        assert!(proof_path.exists(), "Proof file should be created");
+        let _ = std::fs::remove_file(&proof_path);
+    }
 }

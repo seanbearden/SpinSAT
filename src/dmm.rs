@@ -440,4 +440,45 @@ mod tests {
             assert!(d.is_finite(), "dx_l not finite: {}", d);
         }
     }
+
+    #[test]
+    fn test_restart_with_feedback_voltage_seeding() {
+        let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3]]);
+        let mut state = DmmState::new(&f, 42);
+
+        // Simulate CaDiCaL returning phases
+        let cdcl_voltages = vec![1.0, -1.0, 1.0];
+        state.restart_with_feedback(&f, &cdcl_voltages);
+
+        // Voltages should be scaled (0.9x) from CaDiCaL's phases
+        assert!((state.v[0] - 0.9).abs() < 1e-10);
+        assert!((state.v[1] - (-0.9)).abs() < 1e-10);
+        assert!((state.v[2] - 0.9).abs() < 1e-10);
+        // Time should reset
+        assert_eq!(state.t, 0.0);
+    }
+
+    #[test]
+    fn test_restart_with_feedback_extends_memory_for_new_clauses() {
+        let mut f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3]]);
+        let mut state = DmmState::new(&f, 42);
+        assert_eq!(state.x_s.len(), 2);
+        assert_eq!(state.x_l.len(), 2);
+        assert_eq!(state.alpha_m.len(), 2);
+
+        // Add a learned clause (simulating CaDiCaL feedback)
+        f.add_clause(&[1]);
+        assert_eq!(f.num_clauses(), 3);
+
+        // Restart with feedback should extend memory arrays
+        let cdcl_voltages = vec![1.0, -1.0, 1.0];
+        state.restart_with_feedback(&f, &cdcl_voltages);
+
+        assert_eq!(state.x_s.len(), 3, "x_s should extend for new clause");
+        assert_eq!(state.x_l.len(), 3, "x_l should extend for new clause");
+        assert_eq!(state.alpha_m.len(), 3, "alpha_m should extend for new clause");
+        // New clause should have default values
+        assert_eq!(state.x_l[2], 1.0);
+        assert_eq!(state.alpha_m[2], 5.0);
+    }
 }

@@ -106,4 +106,26 @@ mod tests {
         assert!(f.verify(&[false, false]));
         assert!(!f.verify(&[true, false]));
     }
+
+    #[test]
+    fn test_add_clause() {
+        let mut f = Formula::new(2, vec![vec![1, 2]]);
+        assert_eq!(f.num_clauses(), 1);
+        assert!(f.verify(&[true, true]));
+
+        // Add unit clause forcing x1=true
+        f.add_clause(&[1]);
+        assert_eq!(f.num_clauses(), 2);
+        assert!(f.verify(&[true, true]));
+        assert!(f.verify(&[true, false])); // x1=T satisfies both
+
+        // Add contradictory clause: now requires x1=false too
+        f.add_clause(&[-1]);
+        assert_eq!(f.num_clauses(), 3);
+        // No assignment satisfies (x1 OR x2) AND (x1) AND (NOT x1)
+        assert!(!f.verify(&[true, true]));
+        assert!(!f.verify(&[true, false]));
+        assert!(!f.verify(&[false, true]));
+        assert!(!f.verify(&[false, false]));
+    }
 }

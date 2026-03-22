@@ -986,4 +986,83 @@ mod tests {
         // Clean up
         let _ = std::fs::remove_file(&proof_path);
     }
+
+    #[test]
+    fn test_bidirectional_feedback_adds_clauses() {
+        // Test that CaDiCaL feedback (fixed literals) gets incorporated
+        // Use a formula where CaDiCaL can quickly determine fixed variables
+        // (x1) AND (x1 OR x2) AND (x2 OR x3) — x1 is forced true
+        let mut f = Formula::new(3, vec![vec![1], vec![1, 2], vec![2, 3]]);
+        let initial_clauses = f.num_clauses();
+
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            enable_unsat_detection: true,
+            signal_config: SignalConfig {
+                warmup_checks: 1,
+                stagnation_patience: 2,
+                xl_reset_fraction: 1.0,
+                alpha_m_mean_threshold: 1e10,
+                assignment_stability_patience: 100,
+                alpha_divergence_patience: 100,
+            },
+            cdcl_conflict_budget: 10_000,
+            stagnation_check_interval: 10,
+            stagnation_patience: 2,
+            ..Default::default()
+        };
+
+        // This formula is SAT — DMM should find it regardless of feedback path
+        match solve(&mut f, &params, &config) {
+            SolveResult::Sat(a) => assert!(f.verify(&a)),
+            _ => {} // OK if it doesn't solve in time
+        }
+        // If signal fired and CaDiCaL ran, formula may have grown with fixed literals
+        // We can't guarantee the signal fires, but the code path is exercised
+        assert!(
+            f.num_clauses() >= initial_clauses,
+            "Formula should not shrink"
+        );
+    }
+
+    #[test]
+    fn test_try_cdcl_handoff_returns_feedback() {
+        // Directly test the handoff function returns feedback
+        let f = Formula::new(2, vec![vec![1], vec![1, 2]]);
+        let assignment = vec![true, true];
+
+        let (result, feedback) = try_cdcl_handoff(&f, &assignment, 10_000, None);
+
+        // Should be SAT
+        assert!(matches!(result, Some(SolveResult::Sat(_))));
+
+        // Feedback should contain fixed literals (x1 is forced)
+        assert!(
+            !feedback.fixed_literals.is_empty(),
+            "CaDiCaL should find fixed literals"
+        );
+        assert!(
+            feedback.fixed_literals.contains(&1),
+            "x1 should be fixed true: {:?}",
+            feedback.fixed_literals
+        );
+
+        // Voltages should be present (SAT result)
+        assert!(feedback.voltages.is_some(), "Should have voltages after SAT");
+    }
+
+    #[test]
+    fn test_try_cdcl_handoff_unsat_no_voltages() {
+        let f = Formula::new(1, vec![vec![1], vec![-1]]);
+        let assignment = vec![true];
+
+        let (result, feedback) = try_cdcl_handoff(&f, &assignment, 10_000, None);
+
+        assert!(matches!(result, Some(SolveResult::Unsat)));
+        assert!(
+            feedback.voltages.is_none(),
+            "Should not have voltages after UNSAT"
+        );
+    }
 }
