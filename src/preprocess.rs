@@ -97,7 +97,29 @@ pub struct PreprocessStats {
 
 /// Run the full preprocessing pipeline on raw DIMACS clauses.
 /// `num_vars` is from the DIMACS header; `clauses` are signed literal vectors.
+///
+/// Preprocessing cost scales with clause count. For very large instances
+/// (>100K clauses), only cheap O(n) passes run; expensive O(n²) passes
+/// are gated by per-technique thresholds.
 pub fn preprocess(num_vars: usize, clauses: Vec<Vec<i32>>) -> PreprocessResult {
+    /// Skip ALL preprocessing for extremely large instances where even
+    /// unit propagation is too slow (assign_var is O(clauses) per assignment).
+    const MAX_CLAUSE_LITERAL_PRODUCT: usize = 50_000_000;
+
+    let total_literals: usize = clauses.iter().map(|c| c.len()).sum();
+    if clauses.len().saturating_mul(total_literals) > MAX_CLAUSE_LITERAL_PRODUCT {
+        // Formula too large for linear-scan preprocessing. Return as-is.
+        let var_map: Vec<usize> = (1..=num_vars).collect();
+        return PreprocessResult {
+            clauses,
+            num_vars,
+            var_map,
+            fixed_vars: Vec::new(),
+            bve_stack: Vec::new(),
+            stats: PreprocessStats::default(),
+        };
+    }
+
     let mut state = PreprocessState::new(num_vars, clauses);
 
     // Phase 1: Core reductions (iterate until fixpoint)
@@ -276,13 +298,21 @@ impl PreprocessState {
     }
 
     /// Subsumption elimination: if clause A is a subset of clause B, remove B.
+    /// Skipped when active clause count exceeds threshold (O(n²) worst case).
     fn subsumption_eliminate(&mut self) {
+        const SUBSUMP_MAX_CLAUSES: usize = 50_000;
+
         let n = self.clauses.len();
 
         // Collect active clauses sorted by length (shorter first = more likely to subsume)
         let mut indices: Vec<usize> = (0..n)
             .filter(|&i| self.clauses[i].is_some())
             .collect();
+
+        if indices.len() > SUBSUMP_MAX_CLAUSES {
+            return; // Skip — too many clauses for O(n²) pairwise check
+        }
+
         indices.sort_by_key(|&i| self.clauses[i].as_ref().unwrap().len());
 
         // For each pair, check if shorter subsumes longer
@@ -319,8 +349,16 @@ impl PreprocessState {
 
     /// Self-subsuming resolution: if resolving clause A with clause B produces
     /// a clause that subsumes B, strengthen B by removing the resolved literal.
+    /// Skipped when active clause count exceeds threshold (O(n²) per iteration).
     fn self_subsuming_resolve(&mut self) {
+        const SELF_SUB_MAX_CLAUSES: usize = 50_000;
+
         let n = self.clauses.len();
+        let active = self.clauses.iter().filter(|c| c.is_some()).count();
+        if active > SELF_SUB_MAX_CLAUSES {
+            return;
+        }
+
         let mut changed = true;
 
         while changed {
@@ -388,13 +426,40 @@ impl PreprocessState {
 
     /// Bounded Variable Elimination (BVE): resolve out variables where the
     /// number of resolvents doesn't exceed the number of removed clauses.
+    ///
+    /// Skips variables where `pos_count * neg_count > BVE_RESOLVENT_CAP` to
+    /// avoid O(n²) blowup on high-occurrence variables (e.g., in structured
+    /// instances with 500K+ clauses).
     fn bounded_variable_eliminate(&mut self) {
+        // Cap: skip BVE candidates where resolution would generate too many pairs
+        const BVE_RESOLVENT_CAP: usize = 1000;
+
+        // Build occurrence counts in one pass instead of per-variable scans
+        let mut pos_count: Vec<usize> = vec![0; self.num_vars + 1];
+        let mut neg_count: Vec<usize> = vec![0; self.num_vars + 1];
+        for clause in &self.clauses {
+            if let Some(lits) = clause {
+                for &lit in lits {
+                    let var = lit.unsigned_abs() as usize;
+                    if lit > 0 {
+                        pos_count[var] += 1;
+                    } else {
+                        neg_count[var] += 1;
+                    }
+                }
+            }
+        }
+
         let mut candidates: Vec<usize> = (1..=self.num_vars)
-            .filter(|v| !self.assigned.contains_key(v))
+            .filter(|&v| !self.assigned.contains_key(&v))
+            .filter(|&v| {
+                let product = pos_count[v].saturating_mul(neg_count[v]);
+                product > 0 && product <= BVE_RESOLVENT_CAP
+            })
             .collect();
 
         // Sort by occurrence count (least-occurring first = most likely to reduce)
-        candidates.sort_by_key(|&var| self.count_occurrences(var));
+        candidates.sort_by_key(|&var| pos_count[var] + neg_count[var]);
 
         for var in candidates {
             if self.assigned.contains_key(&var) {
@@ -508,7 +573,17 @@ impl PreprocessState {
     /// it and run unit propagation. If both polarities lead to the same forced
     /// assignment of another variable, that assignment is implied.
     /// If one polarity leads to a conflict, the other polarity is forced.
+    ///
+    /// Skipped when clause count exceeds threshold — each probe runs unit
+    /// propagation on a copy, so cost is O(vars × clauses).
     fn failed_literal_probe(&mut self) {
+        const PROBE_MAX_CLAUSES: usize = 50_000;
+
+        let active_clauses = self.clauses.iter().filter(|c| c.is_some()).count();
+        if active_clauses > PROBE_MAX_CLAUSES {
+            return;
+        }
+
         let unassigned: Vec<usize> = (1..=self.num_vars)
             .filter(|v| !self.assigned.contains_key(v))
             .collect();
