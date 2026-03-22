@@ -127,12 +127,29 @@ Modified competition variants exist in `~/Documents/DiVentraGroup/Factorization/
 
 ## Versioning
 
-**Automated via release-plz** — no manual version bumps, no conventional commits required.
+**Automated via release-plz** with [Conventional Commits](https://www.conventionalcommits.org/) for version bump control.
 
 - Version source of truth: `Cargo.toml` (read at compile time via `env!("CARGO_PKG_VERSION")`)
 - **Never hardcode version strings** — use `env!("CARGO_PKG_VERSION")` in Rust code
 - Push to main → release-plz opens a Release PR → merge → git tag + GitHub Release + crates.io publish
 - Pre-compiled static binary attached to every GitHub Release via `release-binary.yml`
+
+### Conventional Commits
+
+All commit messages **must** use conventional commit prefixes. release-plz uses these to determine version bumps:
+
+| Prefix | Bump | Example |
+|--------|------|---------|
+| `feat:` | Minor (0.x.0) | `feat: add CNF preprocessing pipeline` |
+| `fix:` | Patch (0.0.x) | `fix: correct clause indexing off-by-one` |
+| `perf:` | Patch | `perf: vectorize voltage update loop` |
+| `refactor:` | Patch | `refactor: extract adaptive step logic` |
+| `docs:` | Patch | `docs: add integration method notes` |
+| `test:` | Patch | `test: add benchmark for 200-var instances` |
+| `chore:` | Patch | `chore: update dependencies` |
+| `feat!:` or `BREAKING CHANGE` footer | Major (x.0.0) | `feat!: change CLI argument format` |
+
+**New solver capabilities** (preprocessing, restart strategies, new integrators, etc.) are `feat:` — they add functionality.
 
 ### CI/CD Workflows
 - `.github/workflows/ci.yml` — build, test, coverage (cargo-llvm-cov + nextest + Codecov)
