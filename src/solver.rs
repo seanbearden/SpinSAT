@@ -18,6 +18,7 @@ impl Tracer {
 }
 
 /// Result of a solve attempt.
+#[non_exhaustive]
 pub enum SolveResult {
     Sat(Vec<bool>),
     Unsat,

@@ -260,7 +260,7 @@ fn main() {
         SolveResult::Unsat => {
             println!("s UNSATISFIABLE");
         }
-        SolveResult::Unknown => {
+        SolveResult::Unknown | _ => {
             println!("s UNKNOWN");
         }
     }
