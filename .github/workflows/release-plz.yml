@@ -51,10 +51,17 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
 
-      - name: Install musl-tools
-        run: sudo apt-get install -y musl-tools
+      - name: Install musl toolchain with C++ support
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools musl-dev
 
       - name: Build static binary
+        env:
+          # CaDiCaL (via link-cplusplus/cc-rs) needs a C++ compiler for the musl target.
+          # cc-rs looks for CXX_x86_64_unknown_linux_musl first. The system g++ works
+          # because musl-tools provides the musl libc and Rust handles static linking.
+          CXX_x86_64_unknown_linux_musl: g++
         run: cargo build --release --target x86_64-unknown-linux-musl
 
       - name: Copy benchmarks.db from previous release
