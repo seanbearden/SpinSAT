@@ -30,8 +30,19 @@ pub struct CdclSolver {
 impl CdclSolver {
     /// Create a new CDCL solver and load the formula.
     pub fn new(formula: &Formula) -> Self {
+        Self::with_proof(formula, None)
+    }
+
+    /// Create a new CDCL solver with optional DRAT proof output.
+    /// Proof tracing must be enabled before adding clauses (CaDiCaL requirement).
+    pub fn with_proof(formula: &Formula, proof_path: Option<&str>) -> Self {
         let mut solver = ffi::constructor();
         let num_vars = formula.num_vars;
+
+        // Enable proof tracing BEFORE adding clauses (CaDiCaL requirement)
+        if let Some(path) = proof_path {
+            ffi::trace_proof2(&mut solver, path.to_string());
+        }
 
         // Add all clauses (CaDiCaL uses 1-based signed literals, 0-terminated)
         for m in 0..formula.num_clauses() {

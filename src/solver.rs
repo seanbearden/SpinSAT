@@ -263,8 +263,9 @@ fn try_cdcl_handoff(
     formula: &Formula,
     best_assignment: &[bool],
     conflict_budget: i32,
+    proof_path: Option<&str>,
 ) -> (Option<SolveResult>, CdclFeedback) {
-    let mut cdcl = CdclSolver::new(formula);
+    let mut cdcl = CdclSolver::with_proof(formula, proof_path);
     cdcl.set_phase_from_assignment(best_assignment);
     cdcl.set_conflict_limit(conflict_budget);
 
@@ -279,6 +280,10 @@ fn try_cdcl_handoff(
         CdclResult::Unsat => Some(SolveResult::Unsat),
         CdclResult::Unknown => None,
     };
+
+    if proof_path.is_some() {
+        cdcl.close_proof();
+    }
 
     let feedback = CdclFeedback {
         fixed_literals: cdcl.get_fixed_literals(),
@@ -392,8 +397,12 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
                 summary,
             );
 
-            let (result, feedback) =
-                try_cdcl_handoff(formula, &best_assign, config.cdcl_conflict_budget);
+            let (result, feedback) = try_cdcl_handoff(
+                formula,
+                &best_assign,
+                config.cdcl_conflict_budget,
+                config.proof_path.as_deref(),
+            );
 
             if let Some(result) = result {
                 match &result {
@@ -559,15 +568,10 @@ fn cdcl_fallback(
         best_unsat, remaining
     );
 
-    let mut cdcl = CdclSolver::new(formula);
+    let mut cdcl = CdclSolver::with_proof(formula, config.proof_path.as_deref());
 
     // Set phase hints from DMM's best voltage assignment (Deep Cooperation: LS Rephasing)
     cdcl.set_phase_from_voltages(best_voltages);
-
-    // Enable DRAT proof output if requested
-    if let Some(ref path) = config.proof_path {
-        cdcl.enable_proof(path);
-    }
 
     // Solve with CaDiCaL
     let result = cdcl.solve();
@@ -890,5 +894,36 @@ mod tests {
             SolveResult::Unsat => panic!("Should not prove UNSAT for SAT formula"),
             SolveResult::Unknown => panic!("Should have found a solution"),
         }
+    }
+
+    #[test]
+    fn test_drat_proof_output() {
+        // UNSAT formula with DRAT proof output
+        let mut f = Formula::new(1, vec![vec![1], vec![-1]]);
+        let params = Params::default();
+        let proof_file = std::env::temp_dir().join("spinsat_test_proof.drat");
+        let proof_path = proof_file.to_str().unwrap().to_string();
+
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            cdcl_fallback: true,
+            proof_path: Some(proof_path.clone()),
+            max_restarts: 2,
+            stagnation_check_interval: 10,
+            stagnation_patience: 1,
+            strategy: Strategy::Fixed(Method::Euler),
+            ..Default::default()
+        };
+        match solve(&mut f, &params, &config) {
+            SolveResult::Unsat => {
+                // Verify proof file was created and is non-empty
+                let metadata = std::fs::metadata(&proof_path);
+                assert!(metadata.is_ok(), "Proof file should exist");
+                assert!(metadata.unwrap().len() > 0, "Proof file should be non-empty");
+            }
+            other => panic!("Expected UNSAT, got {:?}", matches!(other, SolveResult::Sat(_))),
+        }
+        // Clean up
+        let _ = std::fs::remove_file(&proof_path);
     }
 }
