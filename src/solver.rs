@@ -1,5 +1,6 @@
 use std::time::Instant;
 
+use crate::cdcl::{CdclResult, CdclSolver};
 use crate::dmm::{count_unsat, extract_assignment, is_solved, Derivatives, DmmState, Params};
 use crate::formula::Formula;
 use crate::integrator::{integration_step, Method, ScratchBuffers};
@@ -7,6 +8,7 @@ use crate::integrator::{integration_step, Method, ScratchBuffers};
 /// Result of a solve attempt.
 pub enum SolveResult {
     Sat(Vec<bool>),
+    Unsat,
     Unknown,
 }
 
@@ -47,6 +49,11 @@ pub struct SolverConfig {
     pub strategy: Strategy,
     /// Number of steps for probe strategy's initial test period per method.
     pub probe_steps: u64,
+    /// Enable CaDiCaL CDCL fallback for UNSAT detection.
+    /// When enabled, hands off to CaDiCaL after DMM exhausts its budget.
+    pub cdcl_fallback: bool,
+    /// Path for DRAT proof output (only used when cdcl_fallback is enabled).
+    pub proof_path: Option<String>,
 }
 
 impl Default for SolverConfig {
@@ -59,6 +66,8 @@ impl Default for SolverConfig {
             stagnation_patience: 20,
             strategy: Strategy::Fixed(Method::Euler),
             probe_steps: 5000,
+            cdcl_fallback: false,
+            proof_path: None,
         }
     }
 }
@@ -220,10 +229,19 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
 
     let mut restart_count: u32 = 0;
     let mut best_unsat_ever = formula.num_clauses();
+    let mut best_voltages: Vec<f64> = state.v.clone();
     let mut euler_stats = MethodStats::new(formula.num_clauses());
     let mut trap_stats = MethodStats::new(formula.num_clauses());
     let mut probe_complete = false;
     let mut probe_winner: Option<Method> = None;
+
+    // When CDCL fallback is enabled, reserve time for CaDiCaL
+    let dmm_timeout = if config.cdcl_fallback {
+        // Give DMM 50% of the time budget, CaDiCaL gets the rest
+        config.timeout_secs * 0.5
+    } else {
+        config.timeout_secs
+    };
 
     loop {
         // Select method for this restart
@@ -257,7 +275,7 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
             &mut scratch,
             method,
             config,
-            config.timeout_secs,
+            dmm_timeout,
             &start,
             max_steps,
         );
@@ -273,11 +291,13 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
             return SolveResult::Sat(assignment);
         }
 
-        // Update stats
+        // Track best voltages across all restarts
         if best_unsat < best_unsat_ever {
             best_unsat_ever = best_unsat;
+            best_voltages = state.v.clone();
         }
 
+        // Update stats
         match method {
             Method::Euler => {
                 euler_stats.wall_time += wall_time;
@@ -312,14 +332,14 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
             );
         }
 
-        // Check timeout
-        if start.elapsed().as_secs_f64() >= config.timeout_secs {
-            return SolveResult::Unknown;
+        // Check DMM timeout
+        if start.elapsed().as_secs_f64() >= dmm_timeout {
+            break;
         }
 
         restart_count += 1;
         if restart_count >= config.max_restarts {
-            return SolveResult::Unknown;
+            break;
         }
 
         let new_seed = config
@@ -336,6 +356,76 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
         );
 
         state.restart(formula, new_seed);
+    }
+
+    // DMM exhausted its budget without finding SAT
+    if config.cdcl_fallback {
+        cdcl_fallback(formula, &best_voltages, best_unsat_ever, config, &start)
+    } else {
+        SolveResult::Unknown
+    }
+}
+
+/// Hand off to CaDiCaL CDCL solver after DMM exhausts its budget.
+///
+/// Seeds CaDiCaL with the DMM's best voltage assignment as phase hints,
+/// following the Deep Cooperation approach (Cai et al., IJCAI 2022).
+fn cdcl_fallback(
+    formula: &Formula,
+    best_voltages: &[f64],
+    best_unsat: usize,
+    config: &SolverConfig,
+    start: &Instant,
+) -> SolveResult {
+    let remaining = config.timeout_secs - start.elapsed().as_secs_f64();
+    if remaining <= 0.0 {
+        return SolveResult::Unknown;
+    }
+
+    eprintln!(
+        "c CDCL fallback: DMM best_unsat={}, handing off with {:.1}s remaining",
+        best_unsat, remaining
+    );
+
+    let mut cdcl = CdclSolver::new(formula);
+
+    // Set phase hints from DMM's best voltage assignment (Deep Cooperation: LS Rephasing)
+    cdcl.set_phase_from_voltages(best_voltages);
+
+    // Enable DRAT proof output if requested
+    if let Some(ref path) = config.proof_path {
+        cdcl.enable_proof(path);
+    }
+
+    // Solve with CaDiCaL
+    let result = cdcl.solve();
+
+    // Close proof trace if enabled
+    if config.proof_path.is_some() {
+        cdcl.close_proof();
+    }
+
+    match result {
+        CdclResult::Sat(assignment) => {
+            if formula.verify(&assignment) {
+                eprintln!(
+                    "c CDCL found SAT (elapsed: {:.1}s)",
+                    start.elapsed().as_secs_f64()
+                );
+                SolveResult::Sat(assignment)
+            } else {
+                eprintln!("c CDCL returned invalid SAT assignment, reporting UNKNOWN");
+                SolveResult::Unknown
+            }
+        }
+        CdclResult::Unsat => {
+            eprintln!(
+                "c CDCL proved UNSAT (elapsed: {:.1}s)",
+                start.elapsed().as_secs_f64()
+            );
+            SolveResult::Unsat
+        }
+        CdclResult::Unknown => SolveResult::Unknown,
     }
 }
 
@@ -394,6 +484,7 @@ mod tests {
         };
         match solve(&f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
+            SolveResult::Unsat => panic!("Should have found a solution"),
             SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
@@ -409,6 +500,7 @@ mod tests {
         };
         match solve(&f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
+            SolveResult::Unsat => panic!("Should have found a solution"),
             SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
@@ -424,6 +516,7 @@ mod tests {
         };
         match solve(&f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
+            SolveResult::Unsat => panic!("Should have found a solution"),
             SolveResult::Unknown => panic!("Should have found a solution"),
         }
     }
@@ -486,8 +579,7 @@ mod tests {
             ..Default::default()
         };
         match solve(&f, &params, &config) {
-            SolveResult::Unknown => {}
-            SolveResult::Sat(_) => {}
+            SolveResult::Unknown | SolveResult::Unsat | SolveResult::Sat(_) => {}
         }
     }
 
@@ -525,5 +617,65 @@ mod tests {
             Some(Strategy::Adaptive)
         ));
         assert!(Strategy::from_str("invalid").is_none());
+    }
+
+    #[test]
+    fn test_cdcl_fallback_sat() {
+        // Easy SAT formula — DMM should solve it, but test the fallback path
+        let f = easy_formula();
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            cdcl_fallback: true,
+            strategy: Strategy::Fixed(Method::Euler),
+            ..Default::default()
+        };
+        match solve(&f, &params, &config) {
+            SolveResult::Sat(a) => assert!(f.verify(&a)),
+            SolveResult::Unsat => panic!("Easy formula should be SAT"),
+            SolveResult::Unknown => panic!("Should have found a solution"),
+        }
+    }
+
+    #[test]
+    fn test_cdcl_fallback_unsat() {
+        // Trivially UNSAT: (x1) AND (NOT x1)
+        let f = Formula::new(1, vec![vec![1], vec![-1]]);
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            cdcl_fallback: true,
+            max_restarts: 2,
+            stagnation_check_interval: 10,
+            stagnation_patience: 1,
+            strategy: Strategy::Fixed(Method::Euler),
+            ..Default::default()
+        };
+        match solve(&f, &params, &config) {
+            SolveResult::Unsat => {} // expected
+            SolveResult::Sat(_) => panic!("UNSAT formula should not be SAT"),
+            SolveResult::Unknown => panic!("CDCL fallback should prove UNSAT"),
+        }
+    }
+
+    #[test]
+    fn test_cdcl_fallback_harder_unsat() {
+        // UNSAT: (x1 OR x2) AND (NOT x1 OR x2) AND (x1 OR NOT x2) AND (NOT x1 OR NOT x2)
+        let f = Formula::new(2, vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]]);
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            cdcl_fallback: true,
+            max_restarts: 5,
+            stagnation_check_interval: 50,
+            stagnation_patience: 2,
+            strategy: Strategy::Fixed(Method::Euler),
+            ..Default::default()
+        };
+        match solve(&f, &params, &config) {
+            SolveResult::Unsat => {} // expected
+            SolveResult::Sat(_) => panic!("UNSAT formula should not be SAT"),
+            SolveResult::Unknown => panic!("CDCL fallback should prove UNSAT"),
+        }
     }
 }

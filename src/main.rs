@@ -16,6 +16,8 @@ fn main() {
     let mut auto_zeta = true;
     let mut strategy = Strategy::Adaptive;
     let mut do_preprocess = true;
+    let mut cdcl_fallback = false;
+    let mut proof_path: Option<String> = None;
 
     // Parse arguments
     let mut i = 1;
@@ -56,6 +58,13 @@ fn main() {
             "--no-preprocess" => {
                 do_preprocess = false;
             }
+            "--cdcl-fallback" => {
+                cdcl_fallback = true;
+            }
+            "--proof" => {
+                i += 1;
+                proof_path = args.get(i).cloned();
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: spinsat [OPTIONS] <instance.cnf>");
                 eprintln!();
@@ -66,6 +75,8 @@ fn main() {
                 eprintln!("  -z, --zeta <val>       Learning rate (default: auto by ratio)");
                 eprintln!("      --no-auto-zeta     Disable auto zeta selection");
                 eprintln!("      --no-preprocess    Skip CNF preprocessing");
+                eprintln!("      --cdcl-fallback    Enable CaDiCaL CDCL fallback for UNSAT detection");
+                eprintln!("      --proof <path>     Write DRAT proof to file (requires --cdcl-fallback)");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
                 process::exit(0);
@@ -172,6 +183,8 @@ fn main() {
         timeout_secs: timeout,
         initial_seed: seed,
         strategy,
+        cdcl_fallback,
+        proof_path,
         ..Default::default()
     };
 
@@ -185,6 +198,9 @@ fn main() {
             };
             println!("s SATISFIABLE");
             print_assignment(&full_assignment);
+        }
+        SolveResult::Unsat => {
+            println!("s UNSATISFIABLE");
         }
         SolveResult::Unknown => {
             println!("s UNKNOWN");

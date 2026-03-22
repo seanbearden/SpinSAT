@@ -1207,7 +1207,7 @@ mod tests {
                     reduced_assignment, full
                 );
             }
-            SolveResult::Unknown => {
+            SolveResult::Unsat | SolveResult::Unknown => {
                 // Timeout is acceptable for test, but the formula is trivially SAT
                 // so this shouldn't happen
                 panic!("Solver timed out on trivial formula");
@@ -1255,7 +1255,7 @@ mod tests {
                     "End-to-end: solver found SAT but reconstructed assignment is WRONG!"
                 );
             }
-            SolveResult::Unknown => {
+            SolveResult::Unsat | SolveResult::Unknown => {
                 // Acceptable — solver might timeout on harder instances
             }
         }
