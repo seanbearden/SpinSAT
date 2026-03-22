@@ -339,7 +339,7 @@ ORDER BY ru.solver_version;</textarea>
             const runs = query("SELECT COUNT(*) FROM runs");
             const results = query("SELECT COUNT(*) FROM results");
             const solved = query("SELECT COUNT(*) FROM results WHERE status = 'SATISFIABLE'");
-            const instances = query("SELECT COUNT(DISTINCT instance_hash) FROM competition_results");
+            const instances = query("SELECT COUNT(*) FROM instances");
             const versions = query("SELECT COUNT(DISTINCT solver_version) FROM runs");
             const competition = query("SELECT COUNT(*) FROM competition_results");
 
@@ -347,7 +347,7 @@ ORDER BY ru.solver_version;</textarea>
                 { value: runs.values[0]?.[0] || 0, label: 'Runs' },
                 { value: results.values[0]?.[0] || 0, label: 'Results' },
                 { value: solved.values[0]?.[0] || 0, label: 'Solved' },
-                { value: instances.values[0]?.[0] || 0, label: 'Comp. Instances' },
+                { value: instances.values[0]?.[0] || 0, label: 'Instances' },
                 { value: versions.values[0]?.[0] || 0, label: 'Versions' },
                 { value: competition.values[0]?.[0] || 0, label: 'Competition Ref' },
             ];
@@ -415,6 +415,22 @@ ORDER BY ru.solver_version;</textarea>
 
         function renderSizeChart() {
             const data = query(`
+            const data = query(`
+                SELECT
+                    CASE
+                        WHEN i.isohash = 'empty' THEN 'unknown'
+                        ELSE 'known'
+                    END as category,
+                    COUNT(*) as total,
+                    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as solved
+                FROM results r
+                LEFT JOIN instances i ON r.instance_hash = i.hash
+                JOIN runs ru USING(run_id)
+                WHERE ru.run_id = (SELECT run_id FROM runs ORDER BY timestamp DESC LIMIT 1)
+                GROUP BY category
+            `);
+
+            // Fallback: group by solve time buckets
             const sizeData = query(`
                 SELECT
                     CASE
