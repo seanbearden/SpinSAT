@@ -8,6 +8,11 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to build binary for (e.g. v0.5.0)'
+        required: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -15,6 +20,7 @@ env:
 jobs:
   release-plz:
     name: Release-plz
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
@@ -38,13 +44,19 @@ jobs:
   build-binary:
     name: Build and upload binary
     needs: release-plz
-    if: needs.release-plz.outputs.releases_created == 'true'
+    if: |
+      always() && (
+        (github.event_name == 'push' && needs.release-plz.outputs.releases_created == 'true') ||
+        github.event_name == 'workflow_dispatch'
+      )
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || needs.release-plz.outputs.tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
-          ref: ${{ needs.release-plz.outputs.tag }}
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -67,7 +79,7 @@ jobs:
       - name: Copy benchmarks.db from previous release
         run: |
           for tag in $(gh release list --limit 10 --json tagName --jq '.[].tagName'); do
-            if [ "$tag" != "${{ needs.release-plz.outputs.tag }}" ]; then
+            if [ "$tag" != "${{ env.RELEASE_TAG }}" ]; then
               if gh release download "$tag" --pattern 'benchmarks.db' --dir . --clobber 2>/dev/null; then
                 echo "Copied benchmarks.db from $tag"
                 break
@@ -80,7 +92,7 @@ jobs:
       - name: Upload assets to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.release-plz.outputs.tag }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: |
             target/x86_64-unknown-linux-musl/release/spinsat
             benchmarks.db
