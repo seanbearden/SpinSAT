@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/seanbearden/SpinSAT/actions/workflows/ci.yml/badge.svg)](https://github.com/seanbearden/SpinSAT/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/seanbearden/spinsat/graph/badge.svg?token=So3fiyZXx8)](https://codecov.io/github/seanbearden/spinsat)
-[![Benchmark Results](https://img.shields.io/badge/benchmark-results-blue)](https://seanbearden.github.io/SpinSAT/dashboard/)
+[![Benchmark Results](https://img.shields.io/badge/benchmark-results-blue)](https://seanbearden.github.io/SpinSAT/)
 
 A dynamic SAT solver based on digital memcomputing machines (DMMs), written in Rust.
 
@@ -81,7 +81,7 @@ python3 scripts/compare_results.py --by-size
 
 ### Data Explorer
 
-- [**Dashboard**](https://seanbearden.github.io/SpinSAT/dashboard/) — interactive benchmark visualization (PAR-2 trends, version comparison, SQL explorer)
+- [**Dashboard**](https://seanbearden.github.io/SpinSAT/) — interactive benchmark visualization (PAR-2 trends, version comparison, SQL explorer)
 - Download `benchmarks.db` from [Releases](https://github.com/seanbearden/SpinSAT/releases/latest) for local analysis with any SQLite client
 
 ### SpinSAT vs Kissat 4.0.4 (planted 3-SAT, ratio 4.3)
