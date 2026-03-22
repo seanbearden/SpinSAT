@@ -195,15 +195,18 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
         script.close()
         return script.name
 
-    def _wait_for_ssh(self, max_wait=120):
+    def _wait_for_ssh(self, max_wait=180):
         """Wait until SSH is available on the instance."""
-        print("  Waiting for SSH...", end="", flush=True)
+        print("  Waiting for SSH (first connect may take a minute)...", end="", flush=True)
         start = time.time()
         while time.time() - start < max_wait:
-            result = self._ssh("echo ok", timeout=10)
-            if hasattr(result, "returncode") and result.returncode == 0:
-                print(" ready.")
-                return
+            try:
+                result = self._ssh("echo ok", timeout=30)
+                if hasattr(result, "returncode") and result.returncode == 0:
+                    print(" ready.")
+                    return
+            except subprocess.TimeoutExpired:
+                pass  # SSH not ready yet, retry
             time.sleep(5)
             print(".", end="", flush=True)
         raise CloudBenchmarkError(f"SSH not available after {max_wait}s")

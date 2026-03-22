@@ -14,12 +14,37 @@ RESULTS_FILE="$5"
 
 # --- Competition-faithful CPU setup ---
 setup_cpu() {
-    # Disable turbo boost (Intel pstate driver)
-    local turbo_path="/sys/devices/system/cpu/intel_pstate/no_turbo"
-    if [ -f "$turbo_path" ]; then
-        echo 1 > "$turbo_path" 2>/dev/null && echo "Turbo boost: DISABLED" || echo "Turbo boost: could not disable (not root?)"
+    local turbo_disabled=false
+
+    # Method 1: Intel pstate driver
+    local pstate_path="/sys/devices/system/cpu/intel_pstate/no_turbo"
+    if [ -f "$pstate_path" ]; then
+        echo 1 > "$pstate_path" 2>/dev/null && turbo_disabled=true
+    fi
+
+    # Method 2: ACPI cpufreq / generic MSR (GCP VMs often use this)
+    local boost_path="/sys/devices/system/cpu/cpufreq/boost"
+    if [ -f "$boost_path" ] && [ "$turbo_disabled" = false ]; then
+        echo 0 > "$boost_path" 2>/dev/null && turbo_disabled=true
+    fi
+
+    # Method 3: MSR-based disable (works on most Intel CPUs)
+    if [ "$turbo_disabled" = false ] && command -v wrmsr >/dev/null 2>&1; then
+        # Bit 38 of MSR 0x1a0 disables turbo
+        wrmsr -a 0x1a0 0x4000850089 2>/dev/null && turbo_disabled=true
+    elif [ "$turbo_disabled" = false ] && [ -f /dev/cpu/0/msr ]; then
+        # Try installing msr-tools
+        yum install -y msr-tools 2>/dev/null || apt-get install -y msr-tools 2>/dev/null || true
+        modprobe msr 2>/dev/null || true
+        if command -v wrmsr >/dev/null 2>&1; then
+            wrmsr -a 0x1a0 0x4000850089 2>/dev/null && turbo_disabled=true
+        fi
+    fi
+
+    if [ "$turbo_disabled" = true ]; then
+        echo "Turbo boost: DISABLED"
     else
-        echo "Turbo boost: intel_pstate not available, skipping"
+        echo "Turbo boost: WARNING — could not disable (times may be optimistic)"
     fi
 
     # Set performance governor on all cores
