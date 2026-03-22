@@ -334,7 +334,12 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
     # ------------------------------------------------------------------
 
     def run(self, timeout, tag=""):
-        """Run the benchmark on the VM, streaming output."""
+        """Run the benchmark on the VM via nohup (survives SSH drops).
+
+        The worker runs detached and writes results incrementally to
+        /tmp/results.json after every instance completion. If SSH drops,
+        results are still on the VM and can be recovered.
+        """
         print()
         print("=" * 60)
         print("CLOUD BENCHMARK EXECUTION")
@@ -343,14 +348,78 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
         print(f"  Timeout: {timeout}s per instance")
         print()
 
-        cmd = (
-            f"sudo /tmp/cloud_worker.sh "
+        # Launch worker detached via nohup so it survives SSH drops
+        launch_cmd = (
+            f"nohup sudo /tmp/cloud_worker.sh "
             f"/tmp/spinsat /tmp/instances {timeout} "
-            f"{self.parallelism} /tmp/results.json"
+            f"{self.parallelism} /tmp/results.json "
+            f"> /tmp/worker_stdout.log 2>&1 &"
         )
+        self._ssh(launch_cmd, timeout=30)
+        print("  Worker launched (detached via nohup)")
 
-        self._ssh(cmd, stream=True)
+        # Poll for progress, streaming output
+        print("  Monitoring progress (Ctrl+C safe — worker continues on VM)...")
+        last_line_count = 0
+        while True:
+            try:
+                time.sleep(10)
+                # Check status
+                result = self._ssh(
+                    "cat /tmp/spinsat_status 2>/dev/null || echo unknown",
+                    timeout=15,
+                )
+                status = result.stdout.strip() if hasattr(result, "stdout") else "unknown"
+
+                # Stream new log lines
+                result = self._ssh(
+                    f"tail -n +{last_line_count + 1} /tmp/worker_stdout.log 2>/dev/null | head -100",
+                    timeout=15,
+                )
+                if hasattr(result, "stdout") and result.stdout.strip():
+                    lines = result.stdout.strip().split("\n")
+                    for line in lines:
+                        print(line)
+                    last_line_count += len(lines)
+
+                if status == "completed":
+                    print("  Worker completed.")
+                    break
+
+                # Check if worker process is still running
+                result = self._ssh(
+                    "pgrep -f cloud_worker.sh > /dev/null 2>&1 && echo running || echo stopped",
+                    timeout=15,
+                )
+                proc_status = result.stdout.strip() if hasattr(result, "stdout") else "unknown"
+                if proc_status == "stopped" and status != "completed":
+                    print("  WARNING: Worker stopped but status is not 'completed'")
+                    print("  Partial results may be available in /tmp/results.json")
+                    break
+
+            except (subprocess.TimeoutExpired, Exception) as e:
+                print(f"  SSH poll failed ({e}), retrying in 30s...")
+                print(f"  Worker continues on VM. Recovery: --cloud-recover {self.instance_name}")
+                time.sleep(30)
+
         return "/tmp/results.json"
+
+    def recover_results(self, run_id, tag, timeout_s):
+        """Recover results from a running or completed VM.
+
+        Use when SSH dropped during a run. The worker writes results
+        incrementally, so partial results are always available.
+        """
+        print(f"Recovering results from {self.instance_name}...")
+
+        # Check if results exist
+        result = self._ssh(
+            "ls -la /tmp/results.json 2>/dev/null && cat /tmp/spinsat_status 2>/dev/null || echo 'no results'",
+            timeout=15,
+        )
+        print(f"  VM status: {result.stdout.strip() if hasattr(result, 'stdout') else 'unknown'}")
+
+        return self.download_results("/tmp/results.json", run_id, tag, timeout_s)
 
     def download_results(self, remote_path, run_id, tag, timeout_s):
         """Download results from VM and format for benchmark_suite.py."""

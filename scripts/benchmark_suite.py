@@ -599,16 +599,20 @@ def cloud_run(args, instances, suite_name):
             timeout_s=args.timeout,
         )
     except KeyboardInterrupt:
-        print("\nInterrupted! Cleaning up instance...")
-        cb.delete_instance()
+        print(f"\nInterrupted! Worker continues on VM: {cb.instance_name}")
+        print(f"  Recover results: python3 scripts/benchmark_suite.py --cloud-recover {cb.instance_name} --cloud-zone {cb.zone}")
+        print(f"  Delete manually: gcloud compute instances delete {cb.instance_name} --zone {cb.zone} --project {cb.project}")
         return
     except Exception as e:
         print(f"\nError: {e}")
-        print("Cleaning up instance...")
-        cb.delete_instance()
-        raise
-    finally:
-        cb.delete_instance()
+        print(f"  VM kept alive for recovery: {cb.instance_name}")
+        print(f"  Recover: python3 scripts/benchmark_suite.py --cloud-recover {cb.instance_name} --cloud-zone {cb.zone}")
+        print(f"  Delete:  gcloud compute instances delete {cb.instance_name} --zone {cb.zone} --project {cb.project} --quiet")
+        print(f"  NOTE: VM incurs cost until deleted! Auto-shutdown safety net: {cb.max_hours}h")
+        return
+
+    # Success — delete VM now that results are downloaded
+    cb.delete_instance()
 
     # Save in standard format
     fpath = save_results(results, suite_name)
@@ -689,6 +693,8 @@ def main():
                        help="GCP project ID (default: spinsat)")
     cloud.add_argument("--cloud-cleanup", action="store_true",
                        help="List/cleanup leftover benchmark instances")
+    cloud.add_argument("--cloud-recover", metavar="INSTANCE",
+                       help="Recover results from a running/stopped VM (e.g. spinsat-bench-20260322-085915)")
     cloud.add_argument("--dry-run", action="store_true",
                        help="Show what would happen without executing")
     cloud.add_argument("--retry-incomplete",
@@ -706,6 +712,31 @@ def main():
     if getattr(args, "cloud_cleanup", False):
         from cloud_benchmark import CloudBenchmark
         CloudBenchmark.cleanup_instances(project=args.cloud_project)
+        return
+
+    if getattr(args, "cloud_recover", None):
+        from cloud_benchmark import CloudBenchmark
+        cb = CloudBenchmark(
+            zone=args.cloud_zone,
+            project=args.cloud_project,
+        )
+        cb.instance_name = args.cloud_recover
+        cb._instance_created = True
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        try:
+            results = cb.recover_results(
+                run_id=run_id,
+                tag=args.tag or "recovered",
+                timeout_s=args.timeout,
+            )
+            fpath = save_results(results, "recovered")
+            print_summary(results)
+            print(f"Results saved to: {fpath}")
+            print(f"\nVM still running. Delete when done:")
+            print(f"  gcloud compute instances delete {cb.instance_name} --zone {cb.zone} --project {cb.project}")
+        except Exception as e:
+            print(f"Recovery failed: {e}")
+            print(f"VM: {cb.instance_name} (zone: {cb.zone})")
         return
 
     solvers = args.solvers or ["spinsat"]

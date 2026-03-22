@@ -2,6 +2,9 @@
 # cloud_worker.sh — Runs on the GCP VM to execute benchmarks under
 # competition-faithful conditions (8-way parallel, core-pinned, turbo off).
 #
+# Designed to survive SSH disconnects: runs detached, writes results
+# incrementally, and merges partial results on every completion.
+#
 # Usage: cloud_worker.sh <solver> <instances_dir> <timeout> <parallelism> <results_file>
 
 set -euo pipefail
@@ -11,6 +14,15 @@ INSTANCES_DIR="$2"
 TIMEOUT="$3"
 PARALLELISM="${4:-8}"
 RESULTS_FILE="$5"
+
+# Fixed results directory (not mktemp) so recovery can find it
+RESULTS_DIR="/tmp/spinsat_results"
+PROGRESS_FILE="/tmp/spinsat_progress"
+STATUS_FILE="/tmp/spinsat_status"
+
+mkdir -p "$RESULTS_DIR"
+echo "0" > "$PROGRESS_FILE"
+echo "running" > "$STATUS_FILE"
 
 # --- Competition-faithful CPU setup ---
 setup_cpu() {
@@ -30,10 +42,8 @@ setup_cpu() {
 
     # Method 3: MSR-based disable (works on most Intel CPUs)
     if [ "$turbo_disabled" = false ] && command -v wrmsr >/dev/null 2>&1; then
-        # Bit 38 of MSR 0x1a0 disables turbo
         wrmsr -a 0x1a0 0x4000850089 2>/dev/null && turbo_disabled=true
     elif [ "$turbo_disabled" = false ] && [ -f /dev/cpu/0/msr ]; then
-        # Try installing msr-tools
         yum install -y msr-tools 2>/dev/null || apt-get install -y msr-tools 2>/dev/null || true
         modprobe msr 2>/dev/null || true
         if command -v wrmsr >/dev/null 2>&1; then
@@ -47,7 +57,6 @@ setup_cpu() {
         echo "Turbo boost: WARNING — could not disable (times may be optimistic)"
     fi
 
-    # Set performance governor on all cores
     local set_count=0
     for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
         [ -f "$gov" ] && echo performance > "$gov" 2>/dev/null && set_count=$((set_count + 1))
@@ -57,14 +66,31 @@ setup_cpu() {
 
 setup_cpu
 
+# --- Merge function: builds results.json from per-instance files ---
+# Called after every instance completion for crash-safe incremental results.
+merge_results() {
+    local out="$1"
+    {
+        echo "["
+        local first=true
+        for f in "$RESULTS_DIR"/*.json; do
+            [ -f "$f" ] || continue
+            if [ "$first" = true ]; then
+                first=false
+            else
+                echo ","
+            fi
+            cat "$f"
+        done
+        echo "]"
+    } > "${out}.tmp"
+    mv "${out}.tmp" "$out"
+}
+
 # --- Build job queue ---
 find "$INSTANCES_DIR" -name "*.cnf" -type f | sort > /tmp/job_queue.txt
 TOTAL=$(wc -l < /tmp/job_queue.txt)
 echo "Job queue: $TOTAL instances, $PARALLELISM parallel workers, timeout=${TIMEOUT}s"
-
-RESULTS_TMP=$(mktemp -d)
-PROGRESS_FILE=$(mktemp)
-echo "0" > "$PROGRESS_FILE"
 
 # --- Worker function: runs solver on assigned instances ---
 run_worker() {
@@ -142,7 +168,7 @@ run_worker() {
         fi
 
         # Write per-instance result as JSON
-        cat > "$RESULTS_TMP/${instance_name}.json" <<ENDJSON
+        cat > "$RESULTS_DIR/${instance_name}.json" <<ENDJSON
 {
   "instance": "$instance_name",
   "path": "$cnf_path",
@@ -162,11 +188,14 @@ run_worker() {
 }
 ENDJSON
 
-        # Update progress (atomic via temp file)
+        # Update progress atomically
         local completed
         completed=$(cat "$PROGRESS_FILE")
         completed=$((completed + 1))
         echo "$completed" > "$PROGRESS_FILE"
+
+        # Merge results incrementally (every instance)
+        merge_results "$RESULTS_FILE"
 
         local short_status="???"
         case "$status" in
@@ -193,26 +222,10 @@ echo "All $PARALLELISM workers launched. Waiting for completion..."
 wait
 echo "All workers finished."
 
-# --- Merge per-instance JSONs into single results file ---
-echo "Merging results..."
-
-# Build JSON array from individual files
-{
-    echo "["
-    first=true
-    for f in "$RESULTS_TMP"/*.json; do
-        [ -f "$f" ] || continue
-        if [ "$first" = true ]; then
-            first=false
-        else
-            echo ","
-        fi
-        cat "$f"
-    done
-    echo "]"
-} > "$RESULTS_FILE"
-
+# Final merge
+merge_results "$RESULTS_FILE"
+echo "completed" > "$STATUS_FILE"
 echo "Results written to $RESULTS_FILE ($TOTAL instances)"
 
-# Cleanup
-rm -rf "$RESULTS_TMP" /tmp/job_queue.txt /tmp/worker_queue_*.txt "$PROGRESS_FILE"
+# Cleanup temp files (keep results)
+rm -f /tmp/job_queue.txt /tmp/worker_queue_*.txt "$PROGRESS_FILE"
