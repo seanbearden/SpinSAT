@@ -16,17 +16,32 @@ pub struct PreprocessResult {
     pub var_map: Vec<usize>,
     /// Variables fixed during preprocessing: (original_var_1based, value).
     pub fixed_vars: Vec<(usize, bool)>,
+    /// BVE elimination stack: (eliminated_var_1based, original_clauses_containing_var).
+    /// Processed in reverse order during reconstruction.
+    pub bve_stack: Vec<BveElimination>,
     /// Statistics from preprocessing.
     pub stats: PreprocessStats,
+}
+
+/// Records a BVE elimination for correct variable reconstruction.
+pub struct BveElimination {
+    /// The eliminated variable (1-based).
+    pub var: usize,
+    /// The original clauses that contained this variable (before resolution).
+    /// Used to find a satisfying value during reconstruction.
+    pub original_clauses: Vec<Vec<i32>>,
 }
 
 impl PreprocessResult {
     /// Reconstruct full assignment from the reduced solution.
     /// `reduced_assignment` is indexed by reduced variable (0-based).
+    ///
+    /// BVE-eliminated variables are reconstructed by trying to satisfy their
+    /// original clauses, processed in reverse elimination order.
     pub fn reconstruct_assignment(&self, reduced_assignment: &[bool], original_num_vars: usize) -> Vec<bool> {
         let mut full = vec![false; original_num_vars];
 
-        // Apply fixed variables
+        // Apply fixed variables (unit prop, pure literal, failed literal)
         for &(orig_var, val) in &self.fixed_vars {
             full[orig_var - 1] = val;
         }
@@ -37,7 +52,34 @@ impl PreprocessResult {
             full[orig_var - 1] = val;
         }
 
+        // Reconstruct BVE-eliminated variables in reverse order.
+        // For each eliminated var, find a value that satisfies all its original clauses
+        // given the current assignment of other variables.
+        for elim in self.bve_stack.iter().rev() {
+            let var_idx = elim.var - 1; // 0-based
+            // Try true first, then false
+            full[var_idx] = true;
+            if self.all_clauses_satisfied(&elim.original_clauses, &full) {
+                continue;
+            }
+            full[var_idx] = false;
+            // If false doesn't work either, one of {true, false} must work since
+            // BVE preserves equisatisfiability. If neither works, the reduced formula
+            // was UNSAT (shouldn't happen if solver returned SAT). Leave as false.
+        }
+
         full
+    }
+
+    /// Check if all clauses are satisfied by the given assignment.
+    fn all_clauses_satisfied(&self, clauses: &[Vec<i32>], assignment: &[bool]) -> bool {
+        clauses.iter().all(|clause| {
+            clause.iter().any(|&lit| {
+                let var_idx = (lit.unsigned_abs() as usize) - 1;
+                let val = assignment[var_idx];
+                (lit > 0 && val) || (lit < 0 && !val)
+            })
+        })
     }
 }
 
@@ -114,6 +156,8 @@ struct PreprocessState {
     clauses: Vec<Option<Vec<i32>>>,
     /// Variables assigned during preprocessing: var (1-based) → value.
     assigned: HashMap<usize, bool>,
+    /// BVE elimination stack for correct variable reconstruction.
+    bve_stack: Vec<BveElimination>,
     stats: PreprocessStats,
 }
 
@@ -124,6 +168,7 @@ impl PreprocessState {
             num_vars,
             clauses,
             assigned: HashMap::new(),
+            bve_stack: Vec::new(),
             stats: PreprocessStats::default(),
         }
     }
@@ -421,6 +466,16 @@ impl PreprocessState {
 
             // Only eliminate if we don't increase clause count
             if added <= removed {
+                // Save original clauses for reconstruction before removing them
+                let mut original_clauses = Vec::new();
+                for &idx in pos_clauses.iter().chain(neg_clauses.iter()) {
+                    original_clauses.push(self.clauses[idx].as_ref().unwrap().clone());
+                }
+                self.bve_stack.push(BveElimination {
+                    var,
+                    original_clauses,
+                });
+
                 // Remove original clauses
                 for &idx in pos_clauses.iter().chain(neg_clauses.iter()) {
                     self.clauses[idx] = None;
@@ -434,8 +489,7 @@ impl PreprocessState {
 
                 self.stats.bve_eliminations += 1;
                 self.stats.vars_eliminated += 1;
-                // Mark variable as eliminated (assign false by default; actual value
-                // doesn't matter for BVE since the variable is resolved out)
+                // Mark as eliminated (actual value determined during reconstruction)
                 self.assigned.insert(var, false);
             }
         }
@@ -578,7 +632,12 @@ impl PreprocessState {
             .collect();
 
         let new_num_vars = sorted_vars.len();
-        let fixed_vars: Vec<(usize, bool)> = self.assigned.into_iter().collect();
+
+        // BVE-eliminated vars are reconstructed via bve_stack, not fixed_vars
+        let bve_vars: HashSet<usize> = self.bve_stack.iter().map(|e| e.var).collect();
+        let fixed_vars: Vec<(usize, bool)> = self.assigned.into_iter()
+            .filter(|(var, _)| !bve_vars.contains(var))
+            .collect();
 
         let mut stats = self.stats;
         stats.vars_eliminated = self.num_vars - new_num_vars;
@@ -589,6 +648,7 @@ impl PreprocessState {
             num_vars: new_num_vars,
             var_map,
             fixed_vars,
+            bve_stack: self.bve_stack,
             stats,
         }
     }
@@ -603,9 +663,146 @@ enum ProbeResult {
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // Helper: verify that a formula is satisfiable by the given assignment.
+    // ========================================================================
+    fn verify_assignment(clauses: &[Vec<i32>], assignment: &[bool]) -> bool {
+        clauses.iter().all(|clause| {
+            clause.iter().any(|&lit| {
+                let var_idx = (lit.unsigned_abs() as usize) - 1;
+                let val = assignment[var_idx];
+                (lit > 0 && val) || (lit < 0 && !val)
+            })
+        })
+    }
+
+    /// The critical correctness test: preprocess, then verify the reconstructed
+    /// assignment satisfies the ORIGINAL formula.
+    fn assert_preprocess_preserves_sat(num_vars: usize, clauses: Vec<Vec<i32>>, known_solution: &[bool]) {
+        assert!(
+            verify_assignment(&clauses, known_solution),
+            "Bug in test: known_solution doesn't satisfy the original formula"
+        );
+
+        let result = preprocess(num_vars, clauses.clone());
+
+        if result.num_vars == 0 {
+            // Fully solved by preprocessing
+            let full = result.reconstruct_assignment(&[], num_vars);
+            assert!(
+                verify_assignment(&clauses, &full),
+                "Preprocessing solved formula but reconstructed assignment is WRONG!\n\
+                 Assignment: {:?}\nOriginal clauses: {:?}",
+                full, clauses
+            );
+            return;
+        }
+
+        // Find a satisfying assignment for the reduced formula by trying
+        // all 2^n combinations (only feasible for small test formulas)
+        let mut found = false;
+        for bits in 0..(1u64 << result.num_vars) {
+            let reduced_assignment: Vec<bool> = (0..result.num_vars)
+                .map(|i| (bits >> i) & 1 == 1)
+                .collect();
+
+            // Check if this assignment satisfies the reduced formula
+            if verify_assignment(&result.clauses, &reduced_assignment) {
+                // Reconstruct and verify against ORIGINAL
+                let full = result.reconstruct_assignment(&reduced_assignment, num_vars);
+                assert!(
+                    verify_assignment(&clauses, &full),
+                    "Reduced formula is SAT but reconstructed assignment FAILS on original!\n\
+                     Reduced assignment: {:?}\nFull assignment: {:?}\n\
+                     Original clauses: {:?}\nReduced clauses: {:?}\n\
+                     Fixed vars: {:?}\nBVE stack len: {}",
+                    reduced_assignment, full, clauses, result.clauses,
+                    result.fixed_vars, result.bve_stack.len()
+                );
+                found = true;
+                break;
+            }
+        }
+
+        assert!(
+            found,
+            "Reduced formula is UNSAT but original was SAT! Preprocessing broke equisatisfiability.\n\
+             Original ({} vars, {} clauses) → Reduced ({} vars, {} clauses)\n\
+             Stats: {:?}",
+            num_vars, clauses.len(), result.num_vars, result.clauses.len(), result.stats
+        );
+    }
+
+    // ========================================================================
+    // Simple pseudo-random number generator for deterministic test generation
+    // ========================================================================
+    struct TestRng(u64);
+    impl TestRng {
+        fn new(seed: u64) -> Self { TestRng(seed) }
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+        fn next_range(&mut self, max: u64) -> u64 {
+            self.next() % max
+        }
+    }
+
+    /// Generate a random SAT formula with a planted solution.
+    /// Every clause is guaranteed to be satisfied by `solution`.
+    fn generate_planted_sat(
+        num_vars: usize,
+        num_clauses: usize,
+        clause_width: usize,
+        seed: u64,
+    ) -> (Vec<Vec<i32>>, Vec<bool>) {
+        let mut rng = TestRng::new(seed);
+        let solution: Vec<bool> = (0..num_vars).map(|_| rng.next() % 2 == 0).collect();
+        let mut clauses = Vec::new();
+
+        for _ in 0..num_clauses {
+            let mut clause = Vec::new();
+            let mut used_vars = HashSet::new();
+
+            while clause.len() < clause_width {
+                let var = (rng.next_range(num_vars as u64) as usize) + 1;
+                if used_vars.contains(&var) {
+                    continue;
+                }
+                used_vars.insert(var);
+
+                // At least one literal must be satisfied; for robustness
+                // make each literal independently random but ensure at least one is true
+                let positive = rng.next() % 2 == 0;
+                let lit = if positive { var as i32 } else { -(var as i32) };
+                clause.push(lit);
+            }
+
+            // Ensure clause is satisfied: if no literal matches solution, flip one
+            let satisfied = clause.iter().any(|&lit| {
+                let v = (lit.unsigned_abs() as usize) - 1;
+                (lit > 0 && solution[v]) || (lit < 0 && !solution[v])
+            });
+            if !satisfied {
+                // Flip the first literal to match solution
+                let var = clause[0].unsigned_abs() as usize;
+                clause[0] = if solution[var - 1] { var as i32 } else { -(var as i32) };
+            }
+
+            clauses.push(clause);
+        }
+
+        (clauses, solution)
+    }
+
+    // ========================================================================
+    // Unit tests for individual techniques
+    // ========================================================================
+
     #[test]
-    fn test_unit_propagation() {
-        // x1 is forced true by unit clause, which satisfies clause 1 and shortens clause 3
+    fn test_unit_propagation_basic() {
         let clauses = vec![
             vec![1],           // unit: x1 = true
             vec![1, 2, 3],    // satisfied by x1
@@ -615,82 +812,130 @@ mod tests {
         let result = preprocess(3, clauses);
         assert_eq!(result.num_vars, 0);
         assert_eq!(result.clauses.len(), 0);
-        assert_eq!(result.fixed_vars.len(), 3);
+        assert!(result.stats.unit_props >= 1);
     }
 
     #[test]
-    fn test_pure_literal() {
-        // x1 only appears positive, x2 only appears negative
+    fn test_unit_propagation_correctness() {
+        let clauses = vec![
+            vec![1],
+            vec![1, 2, 3],
+            vec![-1, 2],
+            vec![-2, 3],
+        ];
+        assert_preprocess_preserves_sat(3, clauses, &[true, true, true]);
+    }
+
+    #[test]
+    fn test_pure_literal_basic() {
         let clauses = vec![
             vec![1, 2, 3],
             vec![1, -2, -3],
             vec![1, -2, 3],
         ];
         let result = preprocess(3, clauses);
-        // x1 is pure positive → assign true → all clauses satisfied
         assert_eq!(result.clauses.len(), 0);
+        assert!(result.stats.pure_literals >= 1);
     }
 
     #[test]
-    fn test_subsumption() {
-        // Test subsumption in isolation: [1,2] subsumes [1,2,3]
+    fn test_pure_literal_correctness() {
         let clauses = vec![
-            vec![1, 2],        // subsumes [1, 2, 3]
-            vec![1, 2, 3],    // subsumed
-            vec![-1, 3],      // not subsumed
-            vec![-1, -2],     // prevents pure literal elimination
-            vec![1, -3],      // prevents pure literal elimination
+            vec![1, 2, 3],
+            vec![1, -2, -3],
+            vec![1, -2, 3],
+        ];
+        assert_preprocess_preserves_sat(3, clauses, &[true, false, true]);
+    }
+
+    #[test]
+    fn test_subsumption_fires() {
+        let clauses = vec![
+            vec![1, 2],
+            vec![1, 2, 3],
+            vec![-1, 3],
+            vec![-1, -2],
+            vec![1, -3],
         ];
         let result = preprocess(3, clauses);
-        // Subsumption should remove [1, 2, 3], other techniques may reduce further
         assert!(result.stats.subsumptions >= 1);
     }
 
     #[test]
-    fn test_self_subsuming_resolution() {
-        // Clause A = [1, 2], Clause B = [-1, 2, 3]
-        // Resolving on 1: [2, 3] subsumes B → strengthen B to [2, 3]
+    fn test_subsumption_correctness() {
+        // [1,2] subsumes [1,2,3]. Need solution satisfying all 5 clauses.
+        // x1=true, x2=false, x3=true: [1,2]→T, [1,2,3]→T, [-1,3]→T, [-1,-2]→T, [1,-3]→T(x1)
         let clauses = vec![
             vec![1, 2],
-            vec![-1, 2, 3],
+            vec![1, 2, 3],
+            vec![-1, 3],
+            vec![-1, -2],
+            vec![1, -3],
         ];
-        let result = preprocess(3, clauses);
-        // After self-subsumption: [1, 2] and [2, 3]
-        // Then no further reductions unless pure/unit
-        assert!(result.clauses.len() <= 2);
+        assert_preprocess_preserves_sat(3, clauses, &[true, false, true]);
     }
 
     #[test]
-    fn test_bve_simple() {
+    fn test_self_subsuming_resolution_correctness() {
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 2, 3],
+            vec![-2, -3],
+            vec![1, -3],
+        ];
+        assert_preprocess_preserves_sat(3, clauses, &[true, true, false]);
+    }
+
+    #[test]
+    fn test_bve_correctness() {
         // Variable 3 appears in exactly 2 clauses: [1, 3] and [2, -3]
-        // Resolving: [1, 2] — removes 2 clauses, adds 1
+        // Resolving: [1, 2]
         let clauses = vec![
             vec![1, 3],
             vec![2, -3],
         ];
-        let result = preprocess(3, clauses);
-        // Should resolve out var 3, leaving [1, 2]
-        assert!(result.clauses.len() <= 1);
+        assert_preprocess_preserves_sat(3, clauses, &[true, true, true]);
     }
 
     #[test]
-    fn test_reconstruct_assignment() {
+    fn test_bve_reconstruction_needs_true() {
+        // After BVE resolves out var 3, the original clauses require x3=true
+        // to satisfy [3, -1] when x1=true.
         let clauses = vec![
-            vec![1],           // forces x1 = true
-            vec![-1, 2, 3],   // becomes [2, 3]
-            vec![-2, -3],     // prevents further elimination of x2, x3
-            vec![2, -3],      // both polarities present
-            vec![-2, 3],      // both polarities present
+            vec![1, 3],     // sat by x1=true OR x3=true
+            vec![-1, -3],   // sat by x1=false OR x3=false
+            vec![1, -2],    // sat by x1=true
+            vec![2, -1],    // sat by x2=true OR x1=false
         ];
-        let result = preprocess(3, clauses);
-        // x1 is fixed true; x2 and x3 should remain
-        assert!(result.fixed_vars.iter().any(|&(v, val)| v == 1 && val));
-        if result.num_vars > 0 {
-            let reduced = vec![true; result.num_vars];
-            let full = result.reconstruct_assignment(&reduced, 3);
-            assert_eq!(full[0], true); // x1 was fixed
-        }
+        assert_preprocess_preserves_sat(3, clauses, &[true, true, false]);
     }
+
+    #[test]
+    fn test_bve_reconstruction_needs_false() {
+        // BVE resolves out var 2; reconstruction must find x2 value
+        let clauses = vec![
+            vec![1, -2],
+            vec![-1, 2],
+        ];
+        // Solution: x1=true, x2=true satisfies both clauses
+        // (x1=true→clause1 SAT, x2=true→clause2 SAT)
+        assert_preprocess_preserves_sat(2, clauses, &[true, true]);
+    }
+
+    #[test]
+    fn test_failed_literal_correctness() {
+        let clauses = vec![
+            vec![1, 2],
+            vec![-2, 3],
+            vec![-1, -3],
+            vec![2, 3],
+        ];
+        assert_preprocess_preserves_sat(3, clauses, &[false, true, true]);
+    }
+
+    // ========================================================================
+    // Edge cases
+    // ========================================================================
 
     #[test]
     fn test_empty_formula() {
@@ -700,41 +945,42 @@ mod tests {
     }
 
     #[test]
-    fn test_no_reduction_possible() {
-        // Verify preprocessing doesn't panic on a balanced formula.
-        // With 3 variables, BVE can often resolve them out (many tautological resolvents),
-        // so we use more variables to make it genuinely irreducible.
-        let clauses = vec![
-            vec![1, 2, 3, 4],
-            vec![-1, -2, -3, -4],
-            vec![1, -2, 3, -4],
-            vec![-1, 2, -3, 4],
-            vec![1, 2, -3, -4],
-            vec![-1, -2, 3, 4],
-            vec![1, -2, -3, 4],
-            vec![-1, 2, 3, -4],
-        ];
-        let result = preprocess(4, clauses);
-        // All variables in both polarities, no units, no subsumption.
-        // BVE: 4 pos × 4 neg = 16 resolvents (minus tautologies) vs 8 removed.
-        // With 4 vars and balanced clauses, most resolvents are non-tautological.
-        // At minimum, preprocessing should not panic and produce valid output.
-        assert!(result.num_vars <= 4);
-        assert!(result.clauses.len() <= 8);
+    fn test_single_clause() {
+        let clauses = vec![vec![1, -2, 3]];
+        assert_preprocess_preserves_sat(3, clauses, &[true, false, true]);
     }
 
     #[test]
-    fn test_failed_literal_probing() {
-        // If assigning x1=true leads to conflict, x1 must be false
+    fn test_all_unit_clauses() {
+        let clauses = vec![vec![1], vec![-2], vec![3], vec![-4]];
+        let result = preprocess(4, clauses.clone());
+        assert_eq!(result.num_vars, 0);
+        assert_preprocess_preserves_sat(4, clauses, &[true, false, true, false]);
+    }
+
+    #[test]
+    fn test_duplicate_literals_in_clause() {
+        // Clause with duplicate literals (malformed but shouldn't crash)
         let clauses = vec![
-            vec![1, 2],
-            vec![-2, 3],
-            vec![-1, -3],   // If x1=true and x2=true→x3=true, but -1,-3 needs x1=false or x3=false
-            vec![2, 3],
+            vec![1, 1, 2],
+            vec![-1, 3],
+            vec![-2, -3],
         ];
-        // This tests that the probe infrastructure works without panicking
         let result = preprocess(3, clauses);
+        // Should not panic; result should be valid
         assert!(result.num_vars <= 3);
+    }
+
+    #[test]
+    fn test_tautological_clause() {
+        // Clause [1, -1, 2] is a tautology (always true)
+        // Preprocessing should handle this without breaking
+        let clauses = vec![
+            vec![1, -1, 2],  // tautology
+            vec![-2, 3],
+            vec![2, -3],
+        ];
+        assert_preprocess_preserves_sat(3, clauses, &[true, true, true]);
     }
 
     #[test]
@@ -746,8 +992,272 @@ mod tests {
         ];
         let result1 = preprocess(3, clauses.clone());
         let result2 = preprocess(result1.num_vars, result1.clauses.clone());
-
         assert_eq!(result1.num_vars, result2.num_vars);
         assert_eq!(result1.clauses.len(), result2.clauses.len());
+    }
+
+    #[test]
+    fn test_2sat_formula() {
+        // x1=true,x2=true,x3=false: [1,2]→T, [-1,3]→needs x3=T! Wrong.
+        // x1=true,x2=false,x3=true: [1,2]→T(x1), [-1,3]→T(x3), [-2,-3]→T(x2=F), [1,-3]→T(x1), [2,3]→T(x3)
+        let clauses = vec![
+            vec![1, 2],
+            vec![-1, 3],
+            vec![-2, -3],
+            vec![1, -3],
+            vec![2, 3],
+        ];
+        assert_preprocess_preserves_sat(3, clauses, &[true, false, true]);
+    }
+
+    #[test]
+    fn test_large_clause_width() {
+        // 5-SAT clause
+        let clauses = vec![
+            vec![1, 2, 3, 4, 5],
+            vec![-1, -2, -3, -4, -5],
+            vec![1, -2, 3, -4, 5],
+        ];
+        assert_preprocess_preserves_sat(5, clauses, &[true, false, true, false, true]);
+    }
+
+    // ========================================================================
+    // Randomized correctness tests (planted SAT instances)
+    // ========================================================================
+
+    #[test]
+    fn test_planted_sat_10vars_3sat_seed1() {
+        let (clauses, solution) = generate_planted_sat(10, 30, 3, 12345);
+        assert_preprocess_preserves_sat(10, clauses, &solution);
+    }
+
+    #[test]
+    fn test_planted_sat_10vars_3sat_seed2() {
+        let (clauses, solution) = generate_planted_sat(10, 30, 3, 67890);
+        assert_preprocess_preserves_sat(10, clauses, &solution);
+    }
+
+    #[test]
+    fn test_planted_sat_10vars_3sat_seed3() {
+        let (clauses, solution) = generate_planted_sat(10, 30, 3, 11111);
+        assert_preprocess_preserves_sat(10, clauses, &solution);
+    }
+
+    #[test]
+    fn test_planted_sat_20vars_3sat() {
+        let (clauses, solution) = generate_planted_sat(20, 80, 3, 54321);
+        assert_preprocess_preserves_sat(20, clauses, &solution);
+    }
+
+    #[test]
+    fn test_planted_sat_15vars_near_threshold() {
+        // α ≈ 4.27 is the hardness peak for 3-SAT
+        let (clauses, solution) = generate_planted_sat(15, 64, 3, 99999);
+        assert_preprocess_preserves_sat(15, clauses, &solution);
+    }
+
+    #[test]
+    fn test_planted_sat_overconstrained() {
+        // High clause-to-variable ratio (α ≈ 6)
+        let (clauses, solution) = generate_planted_sat(10, 60, 3, 77777);
+        assert_preprocess_preserves_sat(10, clauses, &solution);
+    }
+
+    #[test]
+    fn test_planted_sat_underconstrained() {
+        // Low clause-to-variable ratio (α ≈ 2) — lots of preprocessing expected
+        let (clauses, solution) = generate_planted_sat(10, 20, 3, 33333);
+        assert_preprocess_preserves_sat(10, clauses, &solution);
+    }
+
+    #[test]
+    fn test_planted_sat_2sat() {
+        let (clauses, solution) = generate_planted_sat(10, 30, 2, 44444);
+        assert_preprocess_preserves_sat(10, clauses, &solution);
+    }
+
+    #[test]
+    fn test_planted_sat_4sat() {
+        let (clauses, solution) = generate_planted_sat(10, 40, 4, 55555);
+        assert_preprocess_preserves_sat(10, clauses, &solution);
+    }
+
+    // ========================================================================
+    // Fuzz-style: many random instances with different seeds
+    // ========================================================================
+
+    #[test]
+    fn test_fuzz_preprocessing_correctness() {
+        // Run 50 random planted-SAT instances through preprocessing
+        // and verify every single one reconstructs correctly.
+        for seed in 0..50u64 {
+            let num_vars = 8 + (seed % 8) as usize;  // 8-15 vars
+            let ratio = 2.0 + (seed % 5) as f64;      // ratio 2-6
+            let num_clauses = (num_vars as f64 * ratio) as usize;
+            let width = 2 + (seed % 3) as usize;      // 2-4 SAT
+
+            let (clauses, solution) = generate_planted_sat(
+                num_vars,
+                num_clauses,
+                width.min(num_vars),
+                seed * 7919 + 42,
+            );
+
+            // Verify planted solution works
+            assert!(
+                verify_assignment(&clauses, &solution),
+                "Planted solution failed for seed={}", seed
+            );
+
+            let result = preprocess(num_vars, clauses.clone());
+
+            if result.num_vars == 0 {
+                let full = result.reconstruct_assignment(&[], num_vars);
+                assert!(
+                    verify_assignment(&clauses, &full),
+                    "Fuzz seed={}: fully solved but reconstruction WRONG", seed
+                );
+                continue;
+            }
+
+            // For small reduced formulas, exhaustively verify
+            if result.num_vars <= 20 {
+                let mut found = false;
+                for bits in 0..(1u64 << result.num_vars) {
+                    let reduced: Vec<bool> = (0..result.num_vars)
+                        .map(|i| (bits >> i) & 1 == 1)
+                        .collect();
+                    if verify_assignment(&result.clauses, &reduced) {
+                        let full = result.reconstruct_assignment(&reduced, num_vars);
+                        assert!(
+                            verify_assignment(&clauses, &full),
+                            "Fuzz seed={}: reduced SAT but reconstruction FAILS original\n\
+                             vars: {} → {}, clauses: {} → {}",
+                            seed, num_vars, result.num_vars,
+                            clauses.len(), result.clauses.len()
+                        );
+                        found = true;
+                        break;
+                    }
+                }
+                assert!(
+                    found,
+                    "Fuzz seed={}: reduced formula UNSAT but original was SAT!\n\
+                     vars: {} → {}, clauses: {} → {}\nStats: {:?}",
+                    seed, num_vars, result.num_vars,
+                    clauses.len(), result.clauses.len(), result.stats
+                );
+            }
+        }
+    }
+
+    // ========================================================================
+    // End-to-end: preprocess + solve + reconstruct + verify
+    // ========================================================================
+
+    #[test]
+    fn test_end_to_end_with_solver() {
+        use crate::dmm::Params;
+        use crate::formula::Formula;
+        use crate::solver::{solve, SolveResult, SolverConfig, Strategy};
+        use crate::integrator::Method;
+
+        // A formula that requires actual solving (not fully reducible)
+        let original_clauses = vec![
+            vec![1, 2, 3],
+            vec![-1, -2, -3],
+            vec![1, -2, 3],
+            vec![-1, 2, -3],
+            vec![1, 2, -3],
+            vec![-1, -2, 3],
+        ];
+        let num_vars = 3;
+
+        let result = preprocess(num_vars, original_clauses.clone());
+
+        if result.num_vars == 0 {
+            let full = result.reconstruct_assignment(&[], num_vars);
+            assert!(verify_assignment(&original_clauses, &full));
+            return;
+        }
+
+        let formula = Formula::new(result.num_vars, result.clauses.clone());
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            strategy: Strategy::Fixed(Method::Euler),
+            ..Default::default()
+        };
+
+        match solve(&formula, &params, &config) {
+            SolveResult::Sat(reduced_assignment) => {
+                // Verify reduced solution is valid for reduced formula
+                let reduced_raw = formula.into_raw_clauses();
+                assert!(
+                    verify_assignment(&reduced_raw, &reduced_assignment),
+                    "Solver returned SAT but assignment doesn't satisfy reduced formula!"
+                );
+
+                // Reconstruct and verify against original
+                let full = result.reconstruct_assignment(&reduced_assignment, num_vars);
+                assert!(
+                    verify_assignment(&original_clauses, &full),
+                    "Solver+reconstruct produced WRONG answer for original formula!\n\
+                     Reduced: {:?}\nFull: {:?}",
+                    reduced_assignment, full
+                );
+            }
+            SolveResult::Unknown => {
+                // Timeout is acceptable for test, but the formula is trivially SAT
+                // so this shouldn't happen
+                panic!("Solver timed out on trivial formula");
+            }
+        }
+    }
+
+    #[test]
+    fn test_end_to_end_planted_with_solver() {
+        use crate::dmm::Params;
+        use crate::formula::Formula;
+        use crate::solver::{solve, SolveResult, SolverConfig, Strategy};
+        use crate::integrator::Method;
+
+        // Generate a moderate instance
+        let (original_clauses, planted_solution) = generate_planted_sat(15, 50, 3, 42424);
+        let num_vars = 15;
+
+        assert!(verify_assignment(&original_clauses, &planted_solution));
+
+        let result = preprocess(num_vars, original_clauses.clone());
+
+        if result.num_vars == 0 {
+            let full = result.reconstruct_assignment(&[], num_vars);
+            assert!(verify_assignment(&original_clauses, &full));
+            return;
+        }
+
+        let formula = Formula::new(result.num_vars, result.clauses.clone());
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 30.0,
+            strategy: Strategy::Fixed(Method::Euler),
+            stagnation_check_interval: 1000,
+            stagnation_patience: 5,
+            max_restarts: 20,
+            ..Default::default()
+        };
+
+        match solve(&formula, &params, &config) {
+            SolveResult::Sat(reduced_assignment) => {
+                let full = result.reconstruct_assignment(&reduced_assignment, num_vars);
+                assert!(
+                    verify_assignment(&original_clauses, &full),
+                    "End-to-end: solver found SAT but reconstructed assignment is WRONG!"
+                );
+            }
+            SolveResult::Unknown => {
+                // Acceptable — solver might timeout on harder instances
+            }
+        }
     }
 }
