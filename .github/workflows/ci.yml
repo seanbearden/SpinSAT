@@ -20,6 +20,9 @@ on:
       - '.github/workflows/ci.yml'
       - 'codecov.yml'
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   ci:
     runs-on: ubuntu-latest
