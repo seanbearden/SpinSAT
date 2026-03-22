@@ -104,10 +104,11 @@ pub struct PreprocessStats {
 pub fn preprocess(num_vars: usize, clauses: Vec<Vec<i32>>) -> PreprocessResult {
     /// Skip ALL preprocessing for extremely large instances where even
     /// unit propagation is too slow (assign_var is O(clauses) per assignment).
-    const MAX_CLAUSE_LITERAL_PRODUCT: usize = 50_000_000;
+    /// Threshold: 100K clauses. Unit prop + pure literal each scan all clauses
+    /// per assignment, so instances above this take seconds just in Phase 1.
+    const MAX_CLAUSES_FOR_PREPROCESS: usize = 100_000;
 
-    let total_literals: usize = clauses.iter().map(|c| c.len()).sum();
-    if clauses.len().saturating_mul(total_literals) > MAX_CLAUSE_LITERAL_PRODUCT {
+    if clauses.len() > MAX_CLAUSES_FOR_PREPROCESS {
         // Formula too large for linear-scan preprocessing. Return as-is.
         let var_map: Vec<usize> = (1..=num_vars).collect();
         return PreprocessResult {
