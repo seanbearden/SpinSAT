@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/seanbearden/SpinSAT/actions/workflows/ci.yml/badge.svg)](https://github.com/seanbearden/SpinSAT/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/github/seanbearden/spinsat/graph/badge.svg?token=So3fiyZXx8)](https://codecov.io/github/seanbearden/spinsat)
+[![Benchmark Results](https://img.shields.io/badge/benchmark-results-blue)](https://seanbearden.github.io/SpinSAT/dashboard/)
 
 A dynamic SAT solver based on digital memcomputing machines (DMMs), written in Rust.
 
