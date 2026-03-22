@@ -6,3 +6,5 @@ pub mod parser;
 pub mod preprocess;
 pub mod solver;
 pub mod unsat_signal;
+#[cfg(feature = "trace")]
+pub mod trace;

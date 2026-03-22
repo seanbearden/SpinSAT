@@ -6,6 +6,17 @@ use crate::formula::Formula;
 use crate::integrator::{integration_step, Method, ScratchBuffers};
 use crate::unsat_signal::{SignalConfig, SignalKind, UnsatSignalDetector};
 
+#[cfg(feature = "trace")]
+use crate::trace::TraceCollector as Tracer;
+#[cfg(not(feature = "trace"))]
+struct Tracer;
+#[cfg(not(feature = "trace"))]
+impl Tracer {
+    #[inline(always)] fn record_step(&mut self, _t: f64, _v: &[f64]) {}
+    #[inline(always)] fn record_memory_step(&mut self, _t: f64, _xs: &[f64], _xl: &[f64]) {}
+    #[inline(always)] fn record_restart(&mut self, _t: f64, _v: &[f64]) {}
+}
+
 /// Result of a solve attempt.
 pub enum SolveResult {
     Sat(Vec<bool>),
@@ -63,6 +74,8 @@ pub struct SolverConfig {
     pub signal_config: SignalConfig,
     /// CaDiCaL conflict budget per signal-triggered handoff attempt.
     pub cdcl_conflict_budget: i32,
+    #[cfg(feature = "trace")]
+    pub trace_config: Option<crate::trace::TraceConfig>,
 }
 
 impl Default for SolverConfig {
@@ -80,6 +93,8 @@ impl Default for SolverConfig {
             enable_unsat_detection: false,
             signal_config: SignalConfig::default(),
             cdcl_conflict_budget: 100_000,
+            #[cfg(feature = "trace")]
+            trace_config: None,
         }
     }
 }
@@ -132,6 +147,8 @@ fn run_attempt(
     start: &Instant,
     max_steps: Option<u64>,
     mut signal_detector: Option<&mut UnsatSignalDetector>,
+    tracer: &mut Option<Tracer>,
+    trace_memory: bool,
 ) -> AttemptResult {
     let attempt_start = start.elapsed().as_secs_f64();
     let mut step: u64 = 0;
@@ -143,6 +160,14 @@ fn run_attempt(
     loop {
         integration_step(method, formula, state, params, derivs, scratch, -1.0);
         step += 1;
+
+        // Solution path trace recording (no-op when trace feature is off)
+        if let Some(ref mut t) = *tracer {
+            t.record_step(state.t, &state.v);
+            if trace_memory {
+                t.record_memory_step(state.t, &state.x_s, &state.x_l);
+            }
+        }
 
         if is_solved(&derivs.c_m) {
             let assignment = extract_assignment(&state.v);
@@ -320,6 +345,22 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
     };
     let mut cdcl_handoff_count: u32 = 0;
 
+    // Initialize trace collector if configured
+    #[cfg(feature = "trace")]
+    let mut tracer: Option<Tracer> = config.trace_config.as_ref().map(|tc| {
+        let mut t = crate::trace::TraceCollector::new(tc, formula.num_vars, formula.num_clauses())
+            .expect("Failed to create trace file");
+        t.init_signs(&state.v);
+        eprintln!("c Trace: recording to {}", tc.output_path);
+        t
+    });
+    #[cfg(feature = "trace")]
+    let trace_memory = config.trace_config.as_ref().map_or(false, |tc| tc.trace_memory);
+    #[cfg(not(feature = "trace"))]
+    let mut tracer: Option<Tracer> = None;
+    #[cfg(not(feature = "trace"))]
+    let trace_memory = false;
+
     let mut restart_count: u32 = 0;
     let mut best_unsat_ever = formula.num_clauses();
     let mut best_voltages: Vec<f64> = state.v.clone();
@@ -371,10 +412,17 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
             &start,
             max_steps,
             signal_detector.as_mut(),
+            &mut tracer,
+            trace_memory,
         );
 
         // Check if solved
         if let Some(assignment) = attempt.solution {
+            #[cfg(feature = "trace")]
+            if let Some(t) = tracer.take() {
+                let _ = t.finish();
+                eprintln!("c Trace: file written");
+            }
             eprintln!(
                 "c Solved after {} restarts using {:?} (elapsed: {:.1}s)",
                 restart_count,
@@ -533,10 +581,22 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
 
         state.restart(formula, new_seed);
 
+        // Record restart marker in trace
+        if let Some(ref mut t) = tracer {
+            t.record_restart(state.t, &state.v);
+        }
+
         // Reset signal detector counters for new restart
         if let Some(ref mut detector) = signal_detector {
             detector.reset_for_restart();
         }
+    }
+
+    // Finalize trace file
+    #[cfg(feature = "trace")]
+    if let Some(t) = tracer.take() {
+        let _ = t.finish();
+        eprintln!("c Trace: file written");
     }
 
     // DMM exhausted its budget without finding SAT

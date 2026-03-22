@@ -19,6 +19,14 @@ fn main() {
     let mut cdcl_fallback = false;
     let mut proof_path: Option<String> = None;
     let mut detect_unsat = false;
+    #[cfg(feature = "trace")]
+    let mut trace_mode: Option<String> = None;
+    #[cfg(feature = "trace")]
+    let mut trace_interval: u64 = 1000;
+    #[cfg(feature = "trace")]
+    let mut trace_output = String::from("trace.bin");
+    #[cfg(feature = "trace")]
+    let mut trace_memory = false;
 
     // Parse arguments
     let mut i = 1;
@@ -69,6 +77,25 @@ fn main() {
             "--detect-unsat" => {
                 detect_unsat = true;
             }
+            #[cfg(feature = "trace")]
+            "--trace" => {
+                i += 1;
+                trace_mode = args.get(i).cloned();
+            }
+            #[cfg(feature = "trace")]
+            "--trace-interval" => {
+                i += 1;
+                trace_interval = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(1000);
+            }
+            #[cfg(feature = "trace")]
+            "--trace-output" => {
+                i += 1;
+                trace_output = args.get(i).cloned().unwrap_or_else(|| "trace.bin".into());
+            }
+            #[cfg(feature = "trace")]
+            "--trace-memory" => {
+                trace_memory = true;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: spinsat [OPTIONS] <instance.cnf>");
                 eprintln!();
@@ -82,6 +109,13 @@ fn main() {
                 eprintln!("      --cdcl-fallback    Enable CaDiCaL CDCL fallback for UNSAT detection");
                 eprintln!("      --proof <path>     Write DRAT proof to file (requires --cdcl-fallback)");
                 eprintln!("      --detect-unsat     Enable UNSAT signal detection with CaDiCaL handoff");
+                #[cfg(feature = "trace")]
+                {
+                    eprintln!("      --trace <mode>     Trace solution path: full or snapshot");
+                    eprintln!("      --trace-interval N Steps between snapshots (default: 1000)");
+                    eprintln!("      --trace-output <p> Trace output file (default: trace.bin)");
+                    eprintln!("      --trace-memory     Also trace x_s and x_l memory variables");
+                }
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
                 process::exit(0);
@@ -192,6 +226,23 @@ fn main() {
         cdcl_fallback,
         proof_path,
         enable_unsat_detection: detect_unsat,
+        #[cfg(feature = "trace")]
+        trace_config: trace_mode.map(|mode| {
+            use spinsat::trace::{TraceConfig, TraceMode};
+            let mode = match mode.as_str() {
+                "full" => TraceMode::Full,
+                "snapshot" => TraceMode::Snapshot { interval_steps: trace_interval },
+                _ => {
+                    eprintln!("Invalid trace mode '{}'. Use: full, snapshot", mode);
+                    process::exit(1);
+                }
+            };
+            TraceConfig {
+                mode,
+                output_path: trace_output.clone(),
+                trace_memory,
+            }
+        }),
         ..Default::default()
     };
 
