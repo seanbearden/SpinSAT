@@ -415,7 +415,6 @@ ORDER BY ru.solver_version;</textarea>
 
         function renderSizeChart() {
             const data = query(`
-            const data = query(`
                 SELECT
                     CASE
                         WHEN i.isohash = 'empty' THEN 'unknown'
