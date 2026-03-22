@@ -3,6 +3,7 @@ use std::process;
 
 use spinsat::dmm::Params;
 use spinsat::parser;
+use spinsat::preprocess;
 use spinsat::solver::{solve, SolveResult, SolverConfig, Strategy};
 
 fn main() {
@@ -14,6 +15,7 @@ fn main() {
     let mut zeta: Option<f64> = None;
     let mut auto_zeta = true;
     let mut strategy = Strategy::Adaptive;
+    let mut do_preprocess = true;
 
     // Parse arguments
     let mut i = 1;
@@ -51,6 +53,9 @@ fn main() {
                 println!("spinsat {}", env!("CARGO_PKG_VERSION"));
                 process::exit(0);
             }
+            "--no-preprocess" => {
+                do_preprocess = false;
+            }
             "--help" | "-h" => {
                 eprintln!("Usage: spinsat [OPTIONS] <instance.cnf>");
                 eprintln!();
@@ -60,6 +65,7 @@ fn main() {
                 eprintln!("  -m, --method <name>    Strategy: euler, trapezoid, rk4, alternate, probe, auto (default: auto)");
                 eprintln!("  -z, --zeta <val>       Learning rate (default: auto by ratio)");
                 eprintln!("      --no-auto-zeta     Disable auto zeta selection");
+                eprintln!("      --no-preprocess    Skip CNF preprocessing");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
                 process::exit(0);
@@ -84,13 +90,65 @@ fn main() {
     };
 
     // Parse DIMACS CNF
-    let formula = match parser::parse_dimacs(&cnf_path) {
+    let raw_formula = match parser::parse_dimacs(&cnf_path) {
         Ok(f) => f,
         Err(e) => {
             eprintln!("c Error parsing {}: {}", cnf_path, e);
             println!("s UNKNOWN");
             process::exit(0);
         }
+    };
+
+    let original_num_vars = raw_formula.num_vars;
+    let original_num_clauses = raw_formula.num_clauses();
+
+    eprintln!("c SpinSAT v{} — DMM-based SAT solver", env!("CARGO_PKG_VERSION"));
+    eprintln!(
+        "c Instance: {} variables, {} clauses (ratio {:.2})",
+        original_num_vars,
+        original_num_clauses,
+        original_num_clauses as f64 / original_num_vars as f64,
+    );
+
+    // Preprocess and build formula
+    use spinsat::formula::Formula;
+    let raw_clauses = raw_formula.into_raw_clauses();
+
+    let (formula, preprocess_result) = if do_preprocess {
+        let result = preprocess::preprocess(original_num_vars, raw_clauses);
+
+        eprintln!(
+            "c Preprocessing: {} vars → {}, {} clauses → {} (eliminated {} vars, {} clauses)",
+            original_num_vars,
+            result.num_vars,
+            original_num_clauses,
+            result.clauses.len(),
+            result.stats.vars_eliminated,
+            result.stats.clauses_eliminated,
+        );
+        eprintln!(
+            "c   unit_prop={}, pure_lit={}, subsump={}, self_sub={}, bve={}, probe={}",
+            result.stats.unit_props,
+            result.stats.pure_literals,
+            result.stats.subsumptions,
+            result.stats.self_subsumptions,
+            result.stats.bve_eliminations,
+            result.stats.failed_literals,
+        );
+
+        if result.num_vars == 0 {
+            // Fully solved by preprocessing
+            eprintln!("c Solved by preprocessing alone!");
+            let full_assignment = result.reconstruct_assignment(&[], original_num_vars);
+            println!("s SATISFIABLE");
+            print_assignment(&full_assignment);
+            process::exit(0);
+        }
+
+        let formula = Formula::new(result.num_vars, result.clauses.clone());
+        (formula, Some(result))
+    } else {
+        (Formula::new(original_num_vars, raw_clauses), None)
     };
 
     let ratio = formula.num_clauses() as f64 / formula.num_vars as f64;
@@ -104,13 +162,6 @@ fn main() {
         params.zeta = z;
     }
 
-    eprintln!("c SpinSAT v{} — DMM-based SAT solver", env!("CARGO_PKG_VERSION"));
-    eprintln!(
-        "c Instance: {} variables, {} clauses (ratio {:.2})",
-        formula.num_vars,
-        formula.num_clauses(),
-        ratio,
-    );
     eprintln!(
         "c Parameters: strategy={:?}, zeta={:.0e}, seed={}",
         strategy, params.zeta, seed
@@ -126,9 +177,14 @@ fn main() {
 
     // Solve
     match solve(&formula, &params, &config) {
-        SolveResult::Sat(assignment) => {
+        SolveResult::Sat(reduced_assignment) => {
+            let full_assignment = if let Some(ref pp) = preprocess_result {
+                pp.reconstruct_assignment(&reduced_assignment, original_num_vars)
+            } else {
+                reduced_assignment
+            };
             println!("s SATISFIABLE");
-            print_assignment(&assignment);
+            print_assignment(&full_assignment);
         }
         SolveResult::Unknown => {
             println!("s UNKNOWN");

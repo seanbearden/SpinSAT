@@ -28,6 +28,23 @@ impl Formula {
         Formula { num_vars, clauses }
     }
 
+    /// Convert back to raw signed literal clauses (1-based).
+    /// Used to feed into the preprocessing pipeline.
+    pub fn into_raw_clauses(self) -> Vec<Vec<i32>> {
+        self.clauses
+            .into_iter()
+            .map(|clause| {
+                clause
+                    .into_iter()
+                    .map(|(var_idx, polarity)| {
+                        let var = (var_idx + 1) as i32;
+                        if polarity > 0.0 { var } else { -var }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
     #[inline]
     pub fn num_clauses(&self) -> usize {
         self.clauses.len()
