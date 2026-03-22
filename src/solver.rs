@@ -719,6 +719,13 @@ fn cdcl_fallback(
     // Set phase hints from DMM's best voltage assignment (Deep Cooperation: LS Rephasing)
     cdcl.set_phase_from_voltages(best_voltages);
 
+    // Set a conflict limit proportional to remaining time.
+    // ~100K conflicts/sec is a rough estimate for CaDiCaL throughput.
+    let conflict_limit = (remaining * 100_000.0) as i32;
+    cdcl.set_conflict_limit(conflict_limit.max(100_000));
+
+    eprintln!("c CDCL conflict limit: {}", conflict_limit.max(100_000));
+
     // Solve with CaDiCaL
     let result = cdcl.solve();
 
