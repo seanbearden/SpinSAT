@@ -1256,7 +1256,7 @@ mod tests {
             return;
         }
 
-        let formula = Formula::new(result.num_vars, result.clauses.clone());
+        let mut formula = Formula::new(result.num_vars, result.clauses.clone());
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -1264,7 +1264,7 @@ mod tests {
             ..Default::default()
         };
 
-        match solve(&formula, &params, &config) {
+        match solve(&mut formula, &params, &config) {
             SolveResult::Sat(reduced_assignment) => {
                 // Verify reduced solution is valid for reduced formula
                 let reduced_raw = formula.into_raw_clauses();
@@ -1311,7 +1311,7 @@ mod tests {
             return;
         }
 
-        let formula = Formula::new(result.num_vars, result.clauses.clone());
+        let mut formula = Formula::new(result.num_vars, result.clauses.clone());
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 30.0,
@@ -1322,7 +1322,7 @@ mod tests {
             ..Default::default()
         };
 
-        match solve(&formula, &params, &config) {
+        match solve(&mut formula, &params, &config) {
             SolveResult::Sat(reduced_assignment) => {
                 let full = result.reconstruct_assignment(&reduced_assignment, num_vars);
                 assert!(

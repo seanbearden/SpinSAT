@@ -122,6 +122,43 @@ impl DmmState {
         self.init_short_memory(formula);
     }
 
+    /// Smart restart with CaDiCaL feedback: set initial voltages from
+    /// CaDiCaL's phases and extend memory arrays for new learned clauses.
+    pub fn restart_with_feedback(
+        &mut self,
+        formula: &Formula,
+        voltages_from_cdcl: &[f64],
+    ) {
+        let m = formula.num_clauses();
+
+        // Set voltages from CaDiCaL's phase assignments
+        for (i, &v) in voltages_from_cdcl.iter().enumerate() {
+            if i < self.v.len() {
+                // Scale slightly toward center to give DMM room to evolve
+                self.v[i] = v * 0.9;
+            }
+        }
+
+        // Extend memory arrays if formula grew (learned clauses added)
+        while self.x_s.len() < m {
+            self.x_s.push(0.0);
+        }
+        while self.x_l.len() < m {
+            self.x_l.push(1.0);
+        }
+        while self.alpha_m.len() < m {
+            self.alpha_m.push(5.0);
+        }
+
+        // Update max_xl for new clause count
+        self.max_xl = 1e4 * (m as f64);
+
+        // Reset time and re-initialize short memory
+        self.t = 0.0;
+        self.last_alpha_adjust_t = 0.0;
+        self.init_short_memory(formula);
+    }
+
     /// Per-clause α_m adjustment heuristic (paper Supplementary II.E).
     /// Called every 10⁴ time units.
     pub fn adjust_alpha_m(&mut self) {

@@ -245,18 +245,30 @@ fn select_method(
     }
 }
 
+/// Feedback from CaDiCaL to DMM after a bounded handoff attempt.
+pub struct CdclFeedback {
+    /// Unit clauses: variables CaDiCaL proved must have a specific value.
+    /// Each element is a 1-based signed literal.
+    pub fixed_literals: Vec<i32>,
+    /// CaDiCaL's phase assignments as voltages for DMM restart.
+    /// None if CaDiCaL didn't reach a SAT state (Unknown or UNSAT).
+    pub voltages: Option<Vec<f64>>,
+}
+
 /// Attempt CaDiCaL handoff with phase hints from DMM's best assignment.
-/// Returns Some(SolveResult) if CaDiCaL resolves it, None if budget exhausted.
+/// Returns (result, feedback):
+/// - result: Some(SolveResult) if CaDiCaL resolves it, None if budget exhausted
+/// - feedback: CaDiCaL's learned info for DMM (always returned, even on Unknown)
 fn try_cdcl_handoff(
     formula: &Formula,
     best_assignment: &[bool],
     conflict_budget: i32,
-) -> Option<SolveResult> {
+) -> (Option<SolveResult>, CdclFeedback) {
     let mut cdcl = CdclSolver::new(formula);
     cdcl.set_phase_from_assignment(best_assignment);
     cdcl.set_conflict_limit(conflict_budget);
 
-    match cdcl.solve() {
+    let result = match cdcl.solve() {
         CdclResult::Sat(assignment) => {
             if formula.verify(&assignment) {
                 Some(SolveResult::Sat(assignment))
@@ -266,11 +278,18 @@ fn try_cdcl_handoff(
         }
         CdclResult::Unsat => Some(SolveResult::Unsat),
         CdclResult::Unknown => None,
-    }
+    };
+
+    let feedback = CdclFeedback {
+        fixed_literals: cdcl.get_fixed_literals(),
+        voltages: cdcl.get_phases_as_voltages(),
+    };
+
+    (result, feedback)
 }
 
 /// Main solve loop with restarts and strategy-based method selection.
-pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> SolveResult {
+pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> SolveResult {
     let start = Instant::now();
     let mut state = DmmState::new(formula, config.initial_seed);
     state.init_short_memory(formula);
@@ -373,9 +392,10 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
                 summary,
             );
 
-            if let Some(result) =
-                try_cdcl_handoff(formula, &best_assign, config.cdcl_conflict_budget)
-            {
+            let (result, feedback) =
+                try_cdcl_handoff(formula, &best_assign, config.cdcl_conflict_budget);
+
+            if let Some(result) = result {
                 match &result {
                     SolveResult::Sat(_) => {
                         eprintln!(
@@ -396,15 +416,46 @@ pub fn solve(formula: &Formula, params: &Params, config: &SolverConfig) -> Solve
                 return result;
             }
 
+            // --- Bidirectional feedback: CaDiCaL → DMM ---
+
+            // Add fixed literals as unit clauses to the formula
+            let num_fixed = feedback.fixed_literals.len();
+            for &lit in &feedback.fixed_literals {
+                formula.add_clause(&[lit]);
+            }
+
+            // Smart restart: use CaDiCaL's phases as initial voltages if available,
+            // otherwise fall back to the DMM's best voltages
+            if let Some(ref cdcl_voltages) = feedback.voltages {
+                state.restart_with_feedback(formula, cdcl_voltages);
+            } else {
+                state.restart_with_feedback(formula, &best_voltages);
+            }
+
+            // Reallocate derivatives and scratch for potentially larger formula
+            derivs = Derivatives::new(formula.num_vars, formula.num_clauses());
+            let needs_scratch = !matches!(config.strategy, Strategy::Fixed(Method::Euler));
+            scratch = if needs_scratch {
+                ScratchBuffers::new(formula, &state)
+            } else {
+                ScratchBuffers::empty()
+            };
+
             eprintln!(
-                "c CaDiCaL exhausted budget ({} conflicts), resuming DMM",
-                config.cdcl_conflict_budget
+                "c CaDiCaL exhausted budget ({} conflicts), resuming DMM with {} fixed lits, {} total clauses",
+                config.cdcl_conflict_budget,
+                num_fixed,
+                formula.num_clauses(),
             );
 
             // Reset signal detector for next DMM phase
             if let Some(ref mut detector) = signal_detector {
                 detector.reset_for_restart();
             }
+
+            // Skip the normal restart logic below — we already did a smart restart
+            restart_count += 1;
+            continue;
         }
 
         // Track best voltages across all restarts
@@ -596,14 +647,14 @@ mod tests {
 
     #[test]
     fn test_solve_easy_euler() {
-        let f = easy_formula();
+        let mut f = easy_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
             strategy: Strategy::Fixed(Method::Euler),
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
             SolveResult::Unsat | SolveResult::Unknown => panic!("Should have found a solution"),
         }
@@ -611,14 +662,14 @@ mod tests {
 
     #[test]
     fn test_solve_easy_trapezoid() {
-        let f = easy_formula();
+        let mut f = easy_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
             strategy: Strategy::Fixed(Method::Trapezoid),
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
             SolveResult::Unsat | SolveResult::Unknown => panic!("Should have found a solution"),
         }
@@ -626,14 +677,14 @@ mod tests {
 
     #[test]
     fn test_solve_easy_rk4() {
-        let f = easy_formula();
+        let mut f = easy_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
             strategy: Strategy::Fixed(Method::Rk4),
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
             SolveResult::Unsat | SolveResult::Unknown => panic!("Should have found a solution"),
         }
@@ -641,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_solve_alternate() {
-        let f = harder_formula();
+        let mut f = harder_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -651,12 +702,12 @@ mod tests {
             max_restarts: 10,
             ..Default::default()
         };
-        let _ = solve(&f, &params, &config);
+        let _ = solve(&mut f, &params, &config);
     }
 
     #[test]
     fn test_solve_probe() {
-        let f = harder_formula();
+        let mut f = harder_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -667,12 +718,12 @@ mod tests {
             max_restarts: 10,
             ..Default::default()
         };
-        let _ = solve(&f, &params, &config);
+        let _ = solve(&mut f, &params, &config);
     }
 
     #[test]
     fn test_solve_adaptive() {
-        let f = harder_formula();
+        let mut f = harder_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -682,12 +733,12 @@ mod tests {
             max_restarts: 10,
             ..Default::default()
         };
-        let _ = solve(&f, &params, &config);
+        let _ = solve(&mut f, &params, &config);
     }
 
     #[test]
     fn test_solve_timeout() {
-        let f = harder_formula();
+        let mut f = harder_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 0.001,
@@ -696,14 +747,14 @@ mod tests {
             stagnation_patience: 1,
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Unknown | SolveResult::Unsat | SolveResult::Sat(_) => {}
         }
     }
 
     #[test]
     fn test_solve_with_restarts() {
-        let f = harder_formula();
+        let mut f = harder_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -712,7 +763,7 @@ mod tests {
             stagnation_patience: 2,
             ..Default::default()
         };
-        let _ = solve(&f, &params, &config);
+        let _ = solve(&mut f, &params, &config);
     }
 
     #[test]
@@ -739,7 +790,7 @@ mod tests {
 
     #[test]
     fn test_cdcl_fallback_sat() {
-        let f = easy_formula();
+        let mut f = easy_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -747,7 +798,7 @@ mod tests {
             strategy: Strategy::Fixed(Method::Euler),
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
             SolveResult::Unsat => panic!("Easy formula should be SAT"),
             SolveResult::Unknown => panic!("Should have found a solution"),
@@ -756,7 +807,7 @@ mod tests {
 
     #[test]
     fn test_cdcl_fallback_unsat() {
-        let f = Formula::new(1, vec![vec![1], vec![-1]]);
+        let mut f = Formula::new(1, vec![vec![1], vec![-1]]);
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -767,7 +818,7 @@ mod tests {
             strategy: Strategy::Fixed(Method::Euler),
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Unsat => {}
             SolveResult::Sat(_) => panic!("UNSAT formula should not be SAT"),
             SolveResult::Unknown => panic!("CDCL fallback should prove UNSAT"),
@@ -776,7 +827,7 @@ mod tests {
 
     #[test]
     fn test_cdcl_fallback_harder_unsat() {
-        let f = Formula::new(2, vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]]);
+        let mut f = Formula::new(2, vec![vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2]]);
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -787,7 +838,7 @@ mod tests {
             strategy: Strategy::Fixed(Method::Euler),
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Unsat => {}
             SolveResult::Sat(_) => panic!("UNSAT formula should not be SAT"),
             SolveResult::Unknown => panic!("CDCL fallback should prove UNSAT"),
@@ -797,7 +848,7 @@ mod tests {
     #[test]
     fn test_solve_unsat_with_signal_detection() {
         // Trivially unsatisfiable: (x1) AND (NOT x1)
-        let f = Formula::new(1, vec![vec![1], vec![-1]]);
+        let mut f = Formula::new(1, vec![vec![1], vec![-1]]);
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -816,7 +867,7 @@ mod tests {
             cdcl_conflict_budget: 10_000,
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Unsat => {} // expected — CaDiCaL proves UNSAT
             SolveResult::Sat(_) => panic!("Should not find SAT for UNSAT formula"),
             SolveResult::Unknown => {} // acceptable if signal doesn't fire in time
@@ -826,7 +877,7 @@ mod tests {
     #[test]
     fn test_solve_sat_with_signal_detection_enabled() {
         // SAT formula with detection enabled — should still find SAT
-        let f = easy_formula();
+        let mut f = easy_formula();
         let params = Params::default();
         let config = SolverConfig {
             timeout_secs: 10.0,
@@ -834,7 +885,7 @@ mod tests {
             signal_config: SignalConfig::default(),
             ..Default::default()
         };
-        match solve(&f, &params, &config) {
+        match solve(&mut f, &params, &config) {
             SolveResult::Sat(a) => assert!(f.verify(&a)),
             SolveResult::Unsat => panic!("Should not prove UNSAT for SAT formula"),
             SolveResult::Unknown => panic!("Should have found a solution"),

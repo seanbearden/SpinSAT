@@ -125,6 +125,43 @@ impl CdclSolver {
     pub fn close_proof(&mut self) {
         ffi::close_proof_trace(&mut self.solver, false);
     }
+
+    /// Extract fixed variables discovered by CaDiCaL during solving.
+    /// Returns unit clauses (1-based signed literals) for variables that
+    /// CaDiCaL has proven must have a specific value.
+    /// `fixed(lit)` returns: +1 if true, -1 if false, 0 if not fixed.
+    pub fn get_fixed_literals(&self) -> Vec<i32> {
+        let mut fixed = Vec::new();
+        for i in 0..self.num_vars {
+            let lit = (i as i32) + 1;
+            let val = ffi::fixed(&self.solver, lit);
+            if val != 0 {
+                fixed.push(if val > 0 { lit } else { -lit });
+            }
+        }
+        fixed
+    }
+
+    /// Check if the solver is in a satisfied state (val() is only valid then).
+    fn is_satisfied(&self) -> bool {
+        ffi::status(&self.solver) == 10
+    }
+
+    /// Extract CaDiCaL's variable assignment as voltages for DMM.
+    /// Only valid after a SAT result. Returns None if not in SAT state.
+    /// Returns 0-based f64 vector: +1.0 for true, -1.0 for false.
+    pub fn get_phases_as_voltages(&mut self) -> Option<Vec<f64>> {
+        if !self.is_satisfied() {
+            return None;
+        }
+        let mut voltages = Vec::with_capacity(self.num_vars);
+        for i in 0..self.num_vars {
+            let lit = (i as i32) + 1;
+            let val = ffi::val(&mut self.solver, lit);
+            voltages.push(if val > 0 { 1.0 } else { -1.0 });
+        }
+        Some(voltages)
+    }
 }
 
 #[cfg(test)]

@@ -61,6 +61,20 @@ impl Formula {
         self.clauses[m].len()
     }
 
+    /// Add a clause to the formula (raw 1-based signed literals).
+    /// Used for incorporating learned clauses from CaDiCaL.
+    pub fn add_clause(&mut self, raw_clause: &[i32]) {
+        let clause: Vec<(usize, f64)> = raw_clause
+            .iter()
+            .map(|&lit| {
+                let var_idx = (lit.unsigned_abs() as usize) - 1;
+                let polarity = if lit > 0 { 1.0 } else { -1.0 };
+                (var_idx, polarity)
+            })
+            .collect();
+        self.clauses.push(clause);
+    }
+
     /// Verify a Boolean assignment satisfies the formula.
     pub fn verify(&self, assignment: &[bool]) -> bool {
         self.clauses.iter().all(|clause| {

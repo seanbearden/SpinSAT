@@ -166,6 +166,7 @@ fn main() {
     } else {
         (Formula::new(original_num_vars, raw_clauses), None)
     };
+    let mut formula = formula;
 
     let ratio = formula.num_clauses() as f64 / formula.num_vars as f64;
 
@@ -195,7 +196,7 @@ fn main() {
     };
 
     // Solve
-    match solve(&formula, &params, &config) {
+    match solve(&mut formula, &params, &config) {
         SolveResult::Sat(reduced_assignment) => {
             let full_assignment = if let Some(ref pp) = preprocess_result {
                 pp.reconstruct_assignment(&reduced_assignment, original_num_vars)
