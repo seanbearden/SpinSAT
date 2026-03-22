@@ -68,23 +68,29 @@ setup_cpu
 
 # --- Merge function: builds results.json from per-instance files ---
 # Called after every instance completion for crash-safe incremental results.
+MERGE_LOCK="/tmp/spinsat_merge.lock"
+
 merge_results() {
     local out="$1"
-    {
-        echo "["
-        local first=true
-        for f in "$RESULTS_DIR"/*.json; do
-            [ -f "$f" ] || continue
-            if [ "$first" = true ]; then
-                first=false
-            else
-                echo ","
-            fi
-            cat "$f"
-        done
-        echo "]"
-    } > "${out}.tmp"
-    mv "${out}.tmp" "$out"
+    # flock ensures only one worker merges at a time
+    (
+        flock -x 200
+        {
+            echo "["
+            local first=true
+            for f in "$RESULTS_DIR"/*.json; do
+                [ -f "$f" ] || continue
+                if [ "$first" = true ]; then
+                    first=false
+                else
+                    echo ","
+                fi
+                cat "$f"
+            done
+            echo "]"
+        } > "${out}.tmp"
+        mv "${out}.tmp" "$out"
+    ) 200>"$MERGE_LOCK"
 }
 
 # --- Build job queue ---
