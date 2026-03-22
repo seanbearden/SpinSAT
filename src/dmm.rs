@@ -211,7 +211,16 @@ pub fn compute_derivatives(
         let k = clause.len();
 
         // Compute L values: L_i = ½(1 - q_i · v_i)
-        let mut l_vals: [f64; 16] = [0.0; 16];
+        // Stack array for common case (k <= 64), heap fallback for wider clauses
+        const STACK_MAX: usize = 64;
+        let mut l_stack: [f64; STACK_MAX] = [0.0; STACK_MAX];
+        let mut l_heap: Vec<f64>;
+        let l_vals: &mut [f64] = if k <= STACK_MAX {
+            &mut l_stack[..k]
+        } else {
+            l_heap = vec![0.0; k];
+            &mut l_heap
+        };
         for (i, &(var_idx, polarity)) in clause.iter().enumerate() {
             l_vals[i] = 0.5 * (1.0 - polarity * state.v[var_idx]);
         }
