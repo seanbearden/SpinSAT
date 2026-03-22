@@ -99,7 +99,7 @@ SUITES = {
 # ---------------------------------------------------------------------------
 
 def detect_solver_version(solver_cmd):
-    """Auto-detect solver version from --version output."""
+    """Auto-detect solver version from --version output, falling back to Cargo.toml."""
     try:
         result = subprocess.run(
             [solver_cmd, "--version"],
@@ -110,9 +110,20 @@ def detect_solver_version(solver_cmd):
         parts = output.split()
         if len(parts) >= 2:
             return parts[1]
-        return output or "unknown"
+        if output:
+            return output
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return "unknown"
+        pass
+
+    # Fallback: read version from Cargo.toml (works when binary is cross-compiled)
+    cargo_toml = PROJECT_ROOT / "Cargo.toml"
+    if cargo_toml.exists():
+        for line in cargo_toml.read_text().splitlines():
+            if line.strip().startswith("version") and "=" in line:
+                ver = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if ver:
+                    return ver
+    return "unknown"
 
 
 def detect_git_info():
