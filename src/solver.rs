@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::cdcl::{CdclResult, CdclSolver};
 use crate::dmm::{count_unsat, extract_assignment, is_solved, Derivatives, DmmState, Params};
 use crate::formula::Formula;
-use crate::integrator::{integration_step, Method, ScratchBuffers};
+use crate::integrator::{integration_step, integration_step_with_engine, DerivEngine, Method, ScratchBuffers};
 use crate::unsat_signal::{SignalConfig, SignalKind, UnsatSignalDetector};
 
 #[cfg(feature = "trace")]
@@ -117,6 +117,8 @@ pub struct SolverConfig {
     pub signal_config: SignalConfig,
     /// CaDiCaL conflict budget per signal-triggered handoff attempt.
     pub cdcl_conflict_budget: i32,
+    /// Use sparse matrix derivative engine (challenger) instead of loop (champion).
+    pub use_sparse_engine: bool,
     #[cfg(feature = "trace")]
     pub trace_config: Option<crate::trace::TraceConfig>,
 }
@@ -139,6 +141,7 @@ impl Default for SolverConfig {
             enable_unsat_detection: false,
             signal_config: SignalConfig::default(),
             cdcl_conflict_budget: 100_000,
+            use_sparse_engine: false,
             #[cfg(feature = "trace")]
             trace_config: None,
         }
@@ -195,6 +198,7 @@ fn run_attempt(
     mut signal_detector: Option<&mut UnsatSignalDetector>,
     tracer: &mut Option<Tracer>,
     trace_memory: bool,
+    engine: &mut DerivEngine,
 ) -> AttemptResult {
     let attempt_start = start.elapsed().as_secs_f64();
     let mut step: u64 = 0;
@@ -203,7 +207,7 @@ fn run_attempt(
     let step_limit = max_steps.unwrap_or(u64::MAX);
     let mut signal_fired: Option<SignalKind> = None;
     loop {
-        integration_step(method, formula, state, params, derivs, scratch, -1.0);
+        integration_step_with_engine(method, formula, state, params, derivs, scratch, -1.0, engine);
         step += 1;
 
         // Solution path trace recording (no-op when trace feature is off)
@@ -378,6 +382,14 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
         ScratchBuffers::empty()
     };
 
+    // Build derivative engine (champion=Loop, challenger=Sparse)
+    let mut engine = if config.use_sparse_engine {
+        use crate::sparse_deriv::SparseDerivEngine;
+        DerivEngine::Sparse(SparseDerivEngine::from_formula(formula))
+    } else {
+        DerivEngine::Loop
+    };
+
     // UNSAT signal detector
     let mut signal_detector = if config.enable_unsat_detection {
         Some(UnsatSignalDetector::new(
@@ -459,6 +471,7 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
             signal_detector.as_mut(),
             &mut tracer,
             trace_memory,
+            &mut engine,
         );
 
         // Check if solved

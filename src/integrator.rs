@@ -1,5 +1,38 @@
 use crate::dmm::{compute_derivatives, Derivatives, DmmState, Params};
 use crate::formula::Formula;
+use crate::sparse_deriv::SparseDerivEngine;
+
+/// Selects which derivative computation engine to use.
+pub enum DerivEngine {
+    /// Champion: clause-by-clause loop (current implementation).
+    Loop,
+    /// Challenger: sparse matrix-vector products (MATLAB-style).
+    Sparse(SparseDerivEngine),
+}
+
+impl DerivEngine {
+    /// Compute derivatives using the selected engine.
+    #[inline]
+    pub fn compute(
+        &mut self,
+        formula: &Formula,
+        state: &DmmState,
+        params: &Params,
+        derivs: &mut Derivatives,
+    ) {
+        match self {
+            DerivEngine::Loop => compute_derivatives(formula, state, params, derivs),
+            DerivEngine::Sparse(engine) => engine.compute(formula, state, params, derivs),
+        }
+    }
+
+    /// Rebuild after formula changes (e.g., add_clause from CDCL).
+    pub fn rebuild(&mut self, formula: &Formula) {
+        if let DerivEngine::Sparse(_) = self {
+            *self = DerivEngine::Sparse(SparseDerivEngine::from_formula(formula));
+        }
+    }
+}
 
 /// Integration method selection.
 #[derive(Clone, Copy, Debug)]
@@ -117,6 +150,28 @@ pub fn integration_step(
         Method::Euler => euler_step(formula, state, params, derivs, dt),
         Method::Trapezoid => trapezoid_step(formula, state, params, derivs, scratch, dt),
         Method::Rk4 => rk4_step(formula, state, params, derivs, scratch, dt),
+    }
+}
+
+/// Perform one integration step using a specific derivative engine.
+pub fn integration_step_with_engine(
+    method: Method,
+    formula: &Formula,
+    state: &mut DmmState,
+    params: &Params,
+    derivs: &mut Derivatives,
+    scratch: &mut ScratchBuffers,
+    dt: f64,
+    engine: &mut DerivEngine,
+) -> f64 {
+    match method {
+        Method::Euler => euler_step_with_engine(formula, state, params, derivs, dt, engine),
+        Method::Trapezoid => {
+            trapezoid_step_with_engine(formula, state, params, derivs, scratch, dt, engine)
+        }
+        Method::Rk4 => {
+            rk4_step_with_engine(formula, state, params, derivs, scratch, dt, engine)
+        }
     }
 }
 
@@ -263,6 +318,131 @@ fn rk4_step(
 
     derivs.c_m.copy_from_slice(&d4.c_m);
 
+    post_step(state, actual_dt);
+    actual_dt
+}
+
+// --- Engine-aware variants (same logic, pluggable derivative computation) ---
+
+fn euler_step_with_engine(
+    formula: &Formula,
+    state: &mut DmmState,
+    params: &Params,
+    derivs: &mut Derivatives,
+    dt: f64,
+    engine: &mut DerivEngine,
+) -> f64 {
+    engine.compute(formula, state, params, derivs);
+
+    let actual_dt = if dt < 0.0 {
+        adaptive_dt(&derivs.dv, params)
+    } else {
+        dt
+    };
+
+    let m = formula.num_clauses();
+    let n = formula.num_vars;
+    for i in 0..m {
+        state.x_l[i] = (state.x_l[i] + derivs.dx_l[i] * actual_dt).clamp(1.0, state.max_xl);
+    }
+    for i in 0..m {
+        state.x_s[i] = (state.x_s[i] + derivs.dx_s[i] * actual_dt).clamp(0.0, 1.0);
+    }
+    for i in 0..n {
+        state.v[i] = (state.v[i] + derivs.dv[i] * actual_dt).clamp(-1.0, 1.0);
+    }
+    post_step(state, actual_dt);
+    actual_dt
+}
+
+fn trapezoid_step_with_engine(
+    formula: &Formula,
+    state: &mut DmmState,
+    params: &Params,
+    derivs: &mut Derivatives,
+    scratch: &mut ScratchBuffers,
+    dt: f64,
+    engine: &mut DerivEngine,
+) -> f64 {
+    let m = formula.num_clauses();
+    let n = formula.num_vars;
+
+    engine.compute(formula, state, params, derivs);
+    let actual_dt = if dt < 0.0 {
+        adaptive_dt(&derivs.dv, params)
+    } else {
+        dt
+    };
+
+    let tmp = scratch.tmp_state.as_mut().unwrap();
+    set_tmp_state(tmp, state, &derivs.dv, &derivs.dx_s, &derivs.dx_l, actual_dt);
+    let d2 = scratch.d2.as_mut().unwrap();
+    engine.compute(formula, tmp, params, d2);
+
+    let half_dt = actual_dt * 0.5;
+    for i in 0..m {
+        state.x_l[i] =
+            (state.x_l[i] + half_dt * (derivs.dx_l[i] + d2.dx_l[i])).clamp(1.0, state.max_xl);
+    }
+    for i in 0..m {
+        state.x_s[i] = (state.x_s[i] + half_dt * (derivs.dx_s[i] + d2.dx_s[i])).clamp(0.0, 1.0);
+    }
+    for i in 0..n {
+        state.v[i] = (state.v[i] + half_dt * (derivs.dv[i] + d2.dv[i])).clamp(-1.0, 1.0);
+    }
+    derivs.c_m.copy_from_slice(&d2.c_m);
+    post_step(state, actual_dt);
+    actual_dt
+}
+
+fn rk4_step_with_engine(
+    formula: &Formula,
+    state: &mut DmmState,
+    params: &Params,
+    derivs: &mut Derivatives,
+    scratch: &mut ScratchBuffers,
+    dt: f64,
+    engine: &mut DerivEngine,
+) -> f64 {
+    let m = formula.num_clauses();
+    let n = formula.num_vars;
+
+    engine.compute(formula, state, params, derivs);
+    let actual_dt = if dt < 0.0 {
+        adaptive_dt(&derivs.dv, params)
+    } else {
+        dt
+    };
+
+    let half_dt = actual_dt * 0.5;
+    let tmp = scratch.tmp_state.as_mut().unwrap();
+
+    set_tmp_state(tmp, state, &derivs.dv, &derivs.dx_s, &derivs.dx_l, half_dt);
+    let d2 = scratch.d2.as_mut().unwrap();
+    engine.compute(formula, tmp, params, d2);
+
+    set_tmp_state(tmp, state, &d2.dv, &d2.dx_s, &d2.dx_l, half_dt);
+    let d3 = scratch.d3.as_mut().unwrap();
+    engine.compute(formula, tmp, params, d3);
+
+    set_tmp_state(tmp, state, &d3.dv, &d3.dx_s, &d3.dx_l, actual_dt);
+    let d4 = scratch.d4.as_mut().unwrap();
+    engine.compute(formula, tmp, params, d4);
+
+    let dt_sixth = actual_dt / 6.0;
+    for i in 0..m {
+        let dx = derivs.dx_l[i] + 2.0 * d2.dx_l[i] + 2.0 * d3.dx_l[i] + d4.dx_l[i];
+        state.x_l[i] = (state.x_l[i] + dt_sixth * dx).clamp(1.0, state.max_xl);
+    }
+    for i in 0..m {
+        let dx = derivs.dx_s[i] + 2.0 * d2.dx_s[i] + 2.0 * d3.dx_s[i] + d4.dx_s[i];
+        state.x_s[i] = (state.x_s[i] + dt_sixth * dx).clamp(0.0, 1.0);
+    }
+    for i in 0..n {
+        let dx = derivs.dv[i] + 2.0 * d2.dv[i] + 2.0 * d3.dv[i] + d4.dv[i];
+        state.v[i] = (state.v[i] + dt_sixth * dx).clamp(-1.0, 1.0);
+    }
+    derivs.c_m.copy_from_slice(&d4.c_m);
     post_step(state, actual_dt);
     actual_dt
 }

@@ -23,6 +23,7 @@ fn main() {
     let mut restart_mode = RestartMode::Cold;
     let mut restart_noise: f64 = 0.1;
     let mut xl_decay: f64 = 0.3;
+    let mut use_sparse_engine = false;
     #[cfg(feature = "trace")]
     let mut trace_mode: Option<String> = None;
     #[cfg(feature = "trace")]
@@ -102,6 +103,9 @@ fn main() {
                 i += 1;
                 xl_decay = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(0.3);
             }
+            "--sparse-engine" => {
+                use_sparse_engine = true;
+            }
             #[cfg(feature = "trace")]
             "--trace" => {
                 i += 1;
@@ -145,6 +149,7 @@ fn main() {
                 eprintln!("      --restart-noise <v> Noise scale for warm/anti-phase restarts (default: 0.1)");
                 eprintln!("      --xl-decay <v>      x_l decay factor for warm restarts (default: 0.3)");
                 eprintln!("      --no-restart       Disable restarts (single continuous integration run)");
+                eprintln!("      --sparse-engine    Use sparse matrix derivative engine (challenger)");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
                 process::exit(0);
@@ -277,6 +282,8 @@ fn main() {
         }),
         ..Default::default()
     };
+
+    config.use_sparse_engine = use_sparse_engine;
 
     if no_restart {
         config.max_restarts = u32::MAX;

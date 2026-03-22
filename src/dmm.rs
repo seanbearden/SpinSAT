@@ -49,6 +49,7 @@ impl Params {
 }
 
 /// DMM state: voltages and memory variables.
+#[derive(Clone)]
 pub struct DmmState {
     /// Voltage for each variable, v_n ∈ [-1, 1]
     pub v: Vec<f64>,
