@@ -111,10 +111,82 @@ impl DmmState {
     /// Restart with new random voltages, reset memories.
     /// Keeps alpha_m (learned clause difficulty) across restarts.
     pub fn restart(&mut self, formula: &Formula, seed: u64) {
-        let n = formula.num_vars;
         let m = formula.num_clauses();
 
-        self.v = Self::random_voltages(n, seed);
+        self.v = Self::random_voltages(formula.num_vars, seed);
+        self.x_s = vec![0.0; m];
+        self.x_l = vec![1.0; m];
+        self.t = 0.0;
+        self.last_alpha_adjust_t = 0.0;
+        self.init_short_memory(formula);
+    }
+
+    /// Warm restart: initialize from best-known voltages with noise perturbation.
+    /// Applies x_l decay transfer to preserve clause difficulty ranking.
+    /// Analog of CDCL's "phase saving" + learnt clause retention.
+    pub fn warm_restart(
+        &mut self,
+        formula: &Formula,
+        best_voltages: &[f64],
+        seed: u64,
+        xl_decay: f64,
+        noise_scale: f64,
+    ) {
+        let m = formula.num_clauses();
+
+        // Generate noise using xorshift64
+        let mut rng_state = seed;
+        let mut rand_f64 = || -> f64 {
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 7;
+            rng_state ^= rng_state << 17;
+            (rng_state as f64) / (u64::MAX as f64) * 2.0 - 1.0 // [-1, 1]
+        };
+
+        // Initialize voltages from best-known + noise, clamped to [-1, 1]
+        self.v = best_voltages
+            .iter()
+            .map(|&bv| (bv + noise_scale * rand_f64()).clamp(-1.0, 1.0))
+            .collect();
+
+        // x_l decay transfer: preserve clause difficulty ranking
+        // x_l_new = 1.0 + decay * (x_l_old - 1.0)
+        for xl in self.x_l.iter_mut() {
+            *xl = 1.0 + xl_decay * (*xl - 1.0);
+        }
+
+        self.x_s = vec![0.0; m];
+        self.t = 0.0;
+        self.last_alpha_adjust_t = 0.0;
+        self.init_short_memory(formula);
+    }
+
+    /// Anti-phase restart: negate best-known voltages to jump to a different
+    /// solution cluster. At ratio ~4.27, solutions cluster in groups separated
+    /// by O(N) Hamming distance — negation targets a different cluster.
+    pub fn anti_phase_restart(
+        &mut self,
+        formula: &Formula,
+        best_voltages: &[f64],
+        seed: u64,
+        noise_scale: f64,
+    ) {
+        let m = formula.num_clauses();
+
+        let mut rng_state = seed;
+        let mut rand_f64 = || -> f64 {
+            rng_state ^= rng_state << 13;
+            rng_state ^= rng_state >> 7;
+            rng_state ^= rng_state << 17;
+            (rng_state as f64) / (u64::MAX as f64) * 2.0 - 1.0
+        };
+
+        // Negate best voltages + noise
+        self.v = best_voltages
+            .iter()
+            .map(|&bv| (-bv + noise_scale * rand_f64()).clamp(-1.0, 1.0))
+            .collect();
+
         self.x_s = vec![0.0; m];
         self.x_l = vec![1.0; m];
         self.t = 0.0;

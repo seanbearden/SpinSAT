@@ -52,6 +52,42 @@ impl Strategy {
     }
 }
 
+/// Restart mode: controls how voltages and memory are initialized on restart.
+#[derive(Clone, Copy, Debug)]
+pub enum RestartMode {
+    /// Cold restart: random voltages, reset all memory (original behavior).
+    Cold,
+    /// Warm restart: best-known voltages + noise, x_l decay transfer.
+    Warm,
+    /// Anti-phase: negate best-known voltages to target different solution cluster.
+    AntiPhase,
+    /// Cycle through modes: Cold → Warm → Warm → AntiPhase → repeat.
+    Cycling,
+}
+
+impl RestartMode {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "cold" => Some(RestartMode::Cold),
+            "warm" => Some(RestartMode::Warm),
+            "anti-phase" | "antiphase" | "anti" => Some(RestartMode::AntiPhase),
+            "cycling" | "cycle" => Some(RestartMode::Cycling),
+            _ => None,
+        }
+    }
+
+    /// Select the actual restart type for a given restart count when cycling.
+    fn select_for_cycle(restart_count: u32) -> RestartMode {
+        match restart_count % 4 {
+            0 => RestartMode::Cold,       // exploration
+            1 => RestartMode::Warm,       // exploitation
+            2 => RestartMode::Warm,       // exploitation
+            3 => RestartMode::AntiPhase,  // cluster hop
+            _ => unreachable!(),
+        }
+    }
+}
+
 /// Solver configuration.
 pub struct SolverConfig {
     pub timeout_secs: f64,
@@ -62,6 +98,12 @@ pub struct SolverConfig {
     pub strategy: Strategy,
     /// Number of steps for probe strategy's initial test period per method.
     pub probe_steps: u64,
+    /// Restart mode: cold (default), warm, anti-phase, or cycling.
+    pub restart_mode: RestartMode,
+    /// Noise scale for warm/anti-phase restarts (default: 0.1).
+    pub restart_noise: f64,
+    /// x_l decay factor for warm restarts (default: 0.3). Range: 0.0 (full reset) to 1.0 (full retain).
+    pub xl_decay: f64,
     /// Enable CaDiCaL CDCL fallback for UNSAT detection.
     /// When enabled, hands off to CaDiCaL after DMM exhausts its budget.
     pub cdcl_fallback: bool,
@@ -89,6 +131,9 @@ impl Default for SolverConfig {
             stagnation_patience: 20,
             strategy: Strategy::Fixed(Method::Euler),
             probe_steps: 5000,
+            restart_mode: RestartMode::Cold,
+            restart_noise: 0.1,
+            xl_decay: 0.3,
             cdcl_fallback: false,
             proof_path: None,
             enable_unsat_detection: false,
@@ -570,16 +615,44 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
             .initial_seed
             .wrapping_add(restart_count as u64 * 7919);
 
+        // Select restart mode
+        let mode = match config.restart_mode {
+            RestartMode::Cycling => RestartMode::select_for_cycle(restart_count),
+            other => other,
+        };
+
         eprintln!(
-            "c Restart {} {:?} (best unsat: {}, best ever: {}, elapsed: {:.1}s)",
+            "c Restart {} {:?} {:?} (best unsat: {}, best ever: {}, elapsed: {:.1}s)",
             restart_count,
             method,
+            mode,
             attempt.best_unsat,
             best_unsat_ever,
             start.elapsed().as_secs_f64()
         );
 
-        state.restart(formula, new_seed);
+        match mode {
+            RestartMode::Cold | RestartMode::Cycling => {
+                state.restart(formula, new_seed);
+            }
+            RestartMode::Warm => {
+                state.warm_restart(
+                    formula,
+                    &best_voltages,
+                    new_seed,
+                    config.xl_decay,
+                    config.restart_noise,
+                );
+            }
+            RestartMode::AntiPhase => {
+                state.anti_phase_restart(
+                    formula,
+                    &best_voltages,
+                    new_seed,
+                    config.restart_noise,
+                );
+            }
+        }
 
         // Record restart marker in trace
         if let Some(ref mut t) = tracer {

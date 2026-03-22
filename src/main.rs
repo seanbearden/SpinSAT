@@ -4,7 +4,7 @@ use std::process;
 use spinsat::dmm::Params;
 use spinsat::parser;
 use spinsat::preprocess;
-use spinsat::solver::{solve, SolveResult, SolverConfig, Strategy};
+use spinsat::solver::{solve, RestartMode, SolveResult, SolverConfig, Strategy};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -20,6 +20,9 @@ fn main() {
     let mut proof_path: Option<String> = None;
     let mut detect_unsat = false;
     let mut no_restart = false;
+    let mut restart_mode = RestartMode::Cold;
+    let mut restart_noise: f64 = 0.1;
+    let mut xl_decay: f64 = 0.3;
     #[cfg(feature = "trace")]
     let mut trace_mode: Option<String> = None;
     #[cfg(feature = "trace")]
@@ -81,6 +84,24 @@ fn main() {
             "--no-restart" => {
                 no_restart = true;
             }
+            "--restart-mode" | "-r" => {
+                i += 1;
+                restart_mode = args
+                    .get(i)
+                    .and_then(|s| RestartMode::from_str(s))
+                    .unwrap_or_else(|| {
+                        eprintln!("Invalid restart mode. Use: cold, warm, anti-phase, cycling");
+                        process::exit(1);
+                    });
+            }
+            "--restart-noise" => {
+                i += 1;
+                restart_noise = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(0.1);
+            }
+            "--xl-decay" => {
+                i += 1;
+                xl_decay = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(0.3);
+            }
             #[cfg(feature = "trace")]
             "--trace" => {
                 i += 1;
@@ -120,6 +141,9 @@ fn main() {
                     eprintln!("      --trace-output <p> Trace output file (default: trace.bin)");
                     eprintln!("      --trace-memory     Also trace x_s and x_l memory variables");
                 }
+                eprintln!("  -r, --restart-mode <m>  Restart mode: cold, warm, anti-phase, cycling (default: cold)");
+                eprintln!("      --restart-noise <v> Noise scale for warm/anti-phase restarts (default: 0.1)");
+                eprintln!("      --xl-decay <v>      x_l decay factor for warm restarts (default: 0.3)");
                 eprintln!("      --no-restart       Disable restarts (single continuous integration run)");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
@@ -228,6 +252,9 @@ fn main() {
         timeout_secs: timeout,
         initial_seed: seed,
         strategy,
+        restart_mode,
+        restart_noise,
+        xl_decay,
         cdcl_fallback,
         proof_path,
         enable_unsat_detection: detect_unsat,
