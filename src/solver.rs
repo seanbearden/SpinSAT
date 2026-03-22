@@ -157,7 +157,6 @@ fn run_attempt(
     let mut stagnation_counter: u32 = 0;
     let step_limit = max_steps.unwrap_or(u64::MAX);
     let mut signal_fired: Option<SignalKind> = None;
-
     loop {
         integration_step(method, formula, state, params, derivs, scratch, -1.0);
         step += 1;

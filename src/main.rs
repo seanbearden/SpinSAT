@@ -19,6 +19,7 @@ fn main() {
     let mut cdcl_fallback = false;
     let mut proof_path: Option<String> = None;
     let mut detect_unsat = false;
+    let mut no_restart = false;
     #[cfg(feature = "trace")]
     let mut trace_mode: Option<String> = None;
     #[cfg(feature = "trace")]
@@ -77,6 +78,9 @@ fn main() {
             "--detect-unsat" => {
                 detect_unsat = true;
             }
+            "--no-restart" => {
+                no_restart = true;
+            }
             #[cfg(feature = "trace")]
             "--trace" => {
                 i += 1;
@@ -116,6 +120,7 @@ fn main() {
                     eprintln!("      --trace-output <p> Trace output file (default: trace.bin)");
                     eprintln!("      --trace-memory     Also trace x_s and x_l memory variables");
                 }
+                eprintln!("      --no-restart       Disable restarts (single continuous integration run)");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
                 process::exit(0);
@@ -219,7 +224,7 @@ fn main() {
     );
 
     // Configure solver
-    let config = SolverConfig {
+    let mut config = SolverConfig {
         timeout_secs: timeout,
         initial_seed: seed,
         strategy,
@@ -245,6 +250,11 @@ fn main() {
         }),
         ..Default::default()
     };
+
+    if no_restart {
+        config.max_restarts = u32::MAX;
+        config.stagnation_patience = u32::MAX; // Never stagnate — run continuously
+    }
 
     // Solve
     match solve(&mut formula, &params, &config) {
