@@ -554,6 +554,57 @@ def print_summary(results):
         print()
 
 
+def cloud_run(args, instances, suite_name):
+    """Run benchmarks on a GCP instance under competition-faithful conditions."""
+    from cloud_benchmark import CloudBenchmark
+
+    cb = CloudBenchmark(
+        zone=args.cloud_zone,
+        machine_type=args.cloud_machine,
+        spot=not args.cloud_on_demand,
+        max_hours=args.cloud_max_hours,
+        parallelism=args.cloud_parallelism,
+        bucket=args.cloud_bucket,
+        project=args.cloud_project,
+    )
+
+    if args.dry_run:
+        cb.print_plan(instances, args.timeout)
+        return
+
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        cb.create_instance()
+        cb.upload_solver()
+        cb.upload_worker_script()
+        cb.upload_instances(instances)
+        remote_results = cb.run(timeout=args.timeout, tag=args.tag)
+
+        results = cb.download_results(
+            remote_results,
+            run_id=run_id,
+            tag=args.tag,
+            timeout_s=args.timeout,
+        )
+    except KeyboardInterrupt:
+        print("\nInterrupted! Cleaning up instance...")
+        cb.delete_instance()
+        return
+    except Exception as e:
+        print(f"\nError: {e}")
+        print("Cleaning up instance...")
+        cb.delete_instance()
+        raise
+    finally:
+        cb.delete_instance()
+
+    # Save in standard format
+    fpath = save_results(results, suite_name)
+    print_summary(results)
+    print(f"Results saved to: {fpath}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="SpinSAT Benchmark Suite")
     parser.add_argument("--suite", choices=list(SUITES.keys()),
@@ -575,6 +626,33 @@ def main():
     parser.add_argument("--list-suites", action="store_true",
                         help="List available benchmark suites")
 
+    # Cloud benchmark flags
+    cloud = parser.add_argument_group("cloud benchmarking (GCP)")
+    cloud.add_argument("--cloud", action="store_true",
+                       help="Run on GCP instead of locally")
+    cloud.add_argument("--cloud-zone", default="us-central1-a",
+                       help="GCP zone (default: us-central1-a)")
+    cloud.add_argument("--cloud-machine", default="n2-highcpu-8",
+                       help="GCP machine type (default: n2-highcpu-8)")
+    cloud.add_argument("--cloud-spot", action="store_true", default=True,
+                       help="Use spot/preemptible instance (default)")
+    cloud.add_argument("--cloud-on-demand", action="store_true",
+                       help="Use on-demand instance (for retries/hard instances)")
+    cloud.add_argument("--cloud-max-hours", type=int, default=6,
+                       help="Auto-delete safety cap in hours (default: 6)")
+    cloud.add_argument("--cloud-parallelism", type=int, default=8,
+                       help="Parallel solver count — 8 mimics competition (default: 8)")
+    cloud.add_argument("--cloud-bucket", default=None,
+                       help="GCS bucket for CNF files (optional, speeds up repeated runs)")
+    cloud.add_argument("--cloud-project", default="spinsat",
+                       help="GCP project ID (default: spinsat)")
+    cloud.add_argument("--cloud-cleanup", action="store_true",
+                       help="List/cleanup leftover benchmark instances")
+    cloud.add_argument("--dry-run", action="store_true",
+                       help="Show what would happen without executing")
+    cloud.add_argument("--retry-incomplete",
+                       help="Path to a PARTIAL results JSON — re-run only missing instances")
+
     args = parser.parse_args()
 
     if args.list_suites:
@@ -583,21 +661,53 @@ def main():
             print(f"  {name:10s} — {suite['description']}")
         return
 
+    # Cloud cleanup mode
+    if getattr(args, "cloud_cleanup", False):
+        from cloud_benchmark import CloudBenchmark
+        CloudBenchmark.cleanup_instances(project=args.cloud_project)
+        return
+
     solvers = args.solvers or ["spinsat"]
     suite_name = args.suite or "custom"
 
-    # Verify solvers exist
-    for s in solvers:
-        if s not in SOLVERS:
-            print(f"Unknown solver: {s}")
-            print(f"Available: {', '.join(SOLVERS.keys())}")
-            return
+    # Cloud mode only supports spinsat
+    if args.cloud and solvers != ["spinsat"]:
+        print("Cloud mode only supports the 'spinsat' solver.")
+        return
 
-    # Collect instances
-    instances = collect_instances(args.suite, args.instances)
+    # Verify solvers exist (local mode only)
+    if not args.cloud:
+        for s in solvers:
+            if s not in SOLVERS:
+                print(f"Unknown solver: {s}")
+                print(f"Available: {', '.join(SOLVERS.keys())}")
+                return
+
+    # Handle --retry-incomplete
+    if args.retry_incomplete:
+        with open(args.retry_incomplete) as f:
+            partial = json.load(f)
+        completed = {inst["instance"] for inst in partial.get("instances", [])}
+        all_instances = collect_instances(args.suite, args.instances)
+        instances = [p for p in all_instances if os.path.basename(p) not in completed]
+        print(f"Retry mode: {len(completed)} complete, {len(instances)} remaining")
+        if not instances:
+            print("All instances already complete!")
+            return
+    else:
+        # Collect instances
+        instances = collect_instances(args.suite, args.instances)
+
     if not instances:
         print("No instances found. Use --suite or --instances.")
         return
+
+    # Cloud execution path
+    if args.cloud:
+        cloud_run(args, instances, suite_name)
+        return
+
+    # --- Local execution path (unchanged) ---
 
     # Auto-detect metadata if recording
     run_metadata = None

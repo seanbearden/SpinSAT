@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""
+GCP Cloud Benchmark Module for SpinSAT.
+
+Manages the lifecycle of a GCP Compute Engine instance for running benchmarks
+under competition-faithful conditions (8-way parallel, core-pinned, turbo off).
+
+Used by benchmark_suite.py --cloud. Not intended to be run standalone.
+"""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).parent.parent
+CLOUD_WORKER = Path(__file__).parent / "cloud_worker.sh"
+
+# GCP defaults
+GCP_PROJECT = "spinsat"
+DEFAULT_ZONE = "us-central1-a"
+DEFAULT_MACHINE = "n2-highcpu-8"
+DEFAULT_IMAGE_FAMILY = "rocky-linux-9-optimized-gcp"
+DEFAULT_IMAGE_PROJECT = "rocky-linux-cloud"
+DEFAULT_MAX_HOURS = 6
+DEFAULT_PARALLELISM = 8
+DEFAULT_BUCKET = "spinsat-benchmarks"
+
+
+class CloudBenchmarkError(Exception):
+    pass
+
+
+class CloudBenchmark:
+    """Manages a GCP instance for running SpinSAT benchmarks."""
+
+    def __init__(
+        self,
+        zone=DEFAULT_ZONE,
+        machine_type=DEFAULT_MACHINE,
+        spot=True,
+        max_hours=DEFAULT_MAX_HOURS,
+        parallelism=DEFAULT_PARALLELISM,
+        bucket=None,
+        project=GCP_PROJECT,
+    ):
+        self.zone = zone
+        self.machine_type = machine_type
+        self.spot = spot
+        self.max_hours = max_hours
+        self.parallelism = parallelism
+        self.bucket = bucket
+        self.project = project
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        self.instance_name = f"spinsat-bench-{ts}"
+        self._instance_created = False
+
+    # ------------------------------------------------------------------
+    # GCP helpers
+    # ------------------------------------------------------------------
+
+    def _gcloud(self, args, check=True, capture=True, timeout=120):
+        """Run a gcloud command."""
+        cmd = ["gcloud"] + args + ["--project", self.project]
+        result = subprocess.run(
+            cmd,
+            capture_output=capture,
+            text=True,
+            timeout=timeout,
+        )
+        if check and result.returncode != 0:
+            stderr = result.stderr if capture else ""
+            raise CloudBenchmarkError(
+                f"gcloud command failed: {' '.join(args)}\n{stderr}"
+            )
+        return result
+
+    def _ssh(self, command, timeout=None, stream=False):
+        """Run a command on the instance via SSH."""
+        cmd = [
+            "gcloud", "compute", "ssh", self.instance_name,
+            "--zone", self.zone,
+            "--project", self.project,
+            "--command", command,
+            "--quiet",
+        ]
+        if stream:
+            # Stream output in real-time
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+            )
+            output_lines = []
+            for line in proc.stdout:
+                print(line, end="", flush=True)
+                output_lines.append(line)
+            proc.wait()
+            if proc.returncode != 0:
+                stderr = proc.stderr.read()
+                # Don't fail on non-zero — solver timeouts cause this
+                print(f"  (ssh exit code: {proc.returncode})", file=sys.stderr)
+            return "".join(output_lines)
+        else:
+            kwargs = {}
+            if timeout:
+                kwargs["timeout"] = timeout
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, **kwargs
+            )
+            return result
+
+    def _scp_to(self, local_path, remote_path):
+        """Copy a file to the instance."""
+        cmd = [
+            "gcloud", "compute", "scp",
+            str(local_path),
+            f"{self.instance_name}:{remote_path}",
+            "--zone", self.zone,
+            "--project", self.project,
+            "--quiet",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise CloudBenchmarkError(f"scp upload failed: {result.stderr}")
+
+    def _scp_from(self, remote_path, local_path):
+        """Copy a file from the instance."""
+        cmd = [
+            "gcloud", "compute", "scp",
+            f"{self.instance_name}:{remote_path}",
+            str(local_path),
+            "--zone", self.zone,
+            "--project", self.project,
+            "--quiet",
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise CloudBenchmarkError(f"scp download failed: {result.stderr}")
+
+    # ------------------------------------------------------------------
+    # Instance lifecycle
+    # ------------------------------------------------------------------
+
+    def create_instance(self):
+        """Create the GCP Compute Engine instance."""
+        print(f"Creating instance: {self.instance_name}")
+        print(f"  Zone: {self.zone}")
+        print(f"  Machine: {self.machine_type}")
+        print(f"  CPU: Intel Ice Lake (pinned)")
+        print(f"  Spot: {self.spot}")
+        print(f"  Max lifetime: {self.max_hours}h")
+
+        args = [
+            "compute", "instances", "create", self.instance_name,
+            "--zone", self.zone,
+            "--machine-type", self.machine_type,
+            "--min-cpu-platform", "Intel Ice Lake",
+            "--image-family", DEFAULT_IMAGE_FAMILY,
+            "--image-project", DEFAULT_IMAGE_PROJECT,
+            "--boot-disk-size", "20GB",
+            "--boot-disk-type", "pd-ssd",
+            # Auto-shutdown safety net
+            "--metadata", f"max_hours={self.max_hours}",
+            "--metadata-from-file",
+            f"startup-script={self._create_startup_script()}",
+            "--scopes", "storage-ro",
+        ]
+
+        if self.spot:
+            args.append("--provisioning-model=SPOT")
+            args.append("--instance-termination-action=STOP")
+
+        self._gcloud(args, timeout=180)
+        self._instance_created = True
+        print(f"  Instance created: {self.instance_name}")
+
+        # Wait for SSH to become available
+        self._wait_for_ssh()
+
+    def _create_startup_script(self):
+        """Create a startup script that schedules auto-shutdown."""
+        script = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sh", delete=False, prefix="spinsat_startup_"
+        )
+        script.write(f"""#!/bin/bash
+# Auto-shutdown safety net: kill instance after {self.max_hours} hours
+shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
+""")
+        script.close()
+        return script.name
+
+    def _wait_for_ssh(self, max_wait=120):
+        """Wait until SSH is available on the instance."""
+        print("  Waiting for SSH...", end="", flush=True)
+        start = time.time()
+        while time.time() - start < max_wait:
+            result = self._ssh("echo ok", timeout=10)
+            if hasattr(result, "returncode") and result.returncode == 0:
+                print(" ready.")
+                return
+            time.sleep(5)
+            print(".", end="", flush=True)
+        raise CloudBenchmarkError(f"SSH not available after {max_wait}s")
+
+    def delete_instance(self):
+        """Delete the instance. Safe to call multiple times."""
+        if not self._instance_created:
+            return
+        print(f"Deleting instance: {self.instance_name}...")
+        try:
+            self._gcloud([
+                "compute", "instances", "delete", self.instance_name,
+                "--zone", self.zone,
+                "--quiet",
+            ], timeout=120)
+            print(f"  Instance deleted.")
+        except (CloudBenchmarkError, subprocess.TimeoutExpired) as e:
+            print(f"  Warning: could not delete instance: {e}")
+            print(f"  Manually delete with: gcloud compute instances delete {self.instance_name} --zone {self.zone} --project {self.project}")
+        self._instance_created = False
+
+    # ------------------------------------------------------------------
+    # File transfer
+    # ------------------------------------------------------------------
+
+    def find_solver_binary(self):
+        """Find the musl-compiled solver binary."""
+        musl_path = PROJECT_ROOT / "target" / "x86_64-unknown-linux-musl" / "release" / "spinsat"
+        if musl_path.exists():
+            return musl_path
+
+        print("Warning: musl binary not found. Building...")
+        result = subprocess.run(
+            ["cargo", "build", "--release", "--target", "x86_64-unknown-linux-musl"],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        if result.returncode != 0:
+            raise CloudBenchmarkError(f"Failed to build musl binary:\n{result.stderr}")
+
+        if musl_path.exists():
+            return musl_path
+
+        raise CloudBenchmarkError(
+            "musl binary not found. Install target: rustup target add x86_64-unknown-linux-musl"
+        )
+
+    def upload_solver(self):
+        """Upload the solver binary to the instance."""
+        binary = self.find_solver_binary()
+        size_mb = binary.stat().st_size / (1024 * 1024)
+        print(f"Uploading solver ({size_mb:.1f} MB)...")
+        self._scp_to(binary, "/tmp/spinsat")
+        self._ssh("chmod +x /tmp/spinsat")
+        print("  Solver uploaded.")
+
+    def upload_instances(self, instance_paths):
+        """Upload CNF instances to the VM.
+
+        If a GCS bucket is configured and instances exist there, the VM pulls
+        from GCS directly (faster). Otherwise, tar+scp from local.
+        """
+        if self.bucket:
+            return self._upload_via_gcs(instance_paths)
+        return self._upload_via_scp(instance_paths)
+
+    def _upload_via_scp(self, instance_paths):
+        """Pack instances into a tarball and scp to VM."""
+        print(f"Packing {len(instance_paths)} instances...")
+        with tempfile.NamedTemporaryFile(suffix=".tar.gz", delete=False) as tf:
+            tar_path = tf.name
+
+        with tarfile.open(tar_path, "w:gz") as tar:
+            for path in instance_paths:
+                tar.add(path, arcname=os.path.basename(path))
+
+        size_mb = os.path.getsize(tar_path) / (1024 * 1024)
+        print(f"  Tarball: {size_mb:.1f} MB")
+        print(f"Uploading instances...")
+        self._scp_to(tar_path, "/tmp/instances.tar.gz")
+        self._ssh("mkdir -p /tmp/instances && tar xzf /tmp/instances.tar.gz -C /tmp/instances")
+        os.unlink(tar_path)
+        print(f"  {len(instance_paths)} instances uploaded.")
+        return "/tmp/instances"
+
+    def _upload_via_gcs(self, instance_paths):
+        """Sync instances to GCS bucket, then pull from VM."""
+        bucket_uri = f"gs://{self.bucket}/instances"
+        print(f"Syncing {len(instance_paths)} instances to {bucket_uri}...")
+
+        # Upload any missing instances to GCS
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for path in instance_paths:
+                dst = os.path.join(tmpdir, os.path.basename(path))
+                if not os.path.exists(dst):
+                    shutil.copy2(path, dst)
+
+            result = subprocess.run(
+                ["gsutil", "-m", "rsync", tmpdir, bucket_uri],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                print(f"  GCS sync warning: {result.stderr}")
+                print("  Falling back to SCP upload...")
+                return self._upload_via_scp(instance_paths)
+
+        # Pull from GCS on the VM
+        print("  Pulling instances from GCS on VM...")
+        self._ssh(
+            f"mkdir -p /tmp/instances && gsutil -m cp '{bucket_uri}/*.cnf' /tmp/instances/",
+            timeout=300,
+        )
+        print(f"  {len(instance_paths)} instances ready on VM.")
+        return "/tmp/instances"
+
+    def upload_worker_script(self):
+        """Upload the cloud_worker.sh script to the instance."""
+        self._scp_to(CLOUD_WORKER, "/tmp/cloud_worker.sh")
+        self._ssh("chmod +x /tmp/cloud_worker.sh")
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
+    def run(self, timeout, tag=""):
+        """Run the benchmark on the VM, streaming output."""
+        print()
+        print("=" * 60)
+        print("CLOUD BENCHMARK EXECUTION")
+        print("=" * 60)
+        print(f"  Parallelism: {self.parallelism} (competition-faithful)")
+        print(f"  Timeout: {timeout}s per instance")
+        print()
+
+        cmd = (
+            f"sudo /tmp/cloud_worker.sh "
+            f"/tmp/spinsat /tmp/instances {timeout} "
+            f"{self.parallelism} /tmp/results.json"
+        )
+
+        self._ssh(cmd, stream=True)
+        return "/tmp/results.json"
+
+    def download_results(self, remote_path, run_id, tag, timeout_s):
+        """Download results from VM and format for benchmark_suite.py."""
+        local_tmp = tempfile.NamedTemporaryFile(
+            suffix=".json", delete=False, prefix="cloud_results_"
+        )
+        local_tmp.close()
+
+        self._scp_from(remote_path, local_tmp.name)
+
+        with open(local_tmp.name) as f:
+            raw_instances = json.load(f)
+        os.unlink(local_tmp.name)
+
+        # Get CPU info from VM
+        cpu_info = "unknown"
+        try:
+            result = self._ssh(
+                "lscpu | grep 'Model name' | sed 's/.*: *//'",
+                timeout=10,
+            )
+            if hasattr(result, "stdout") and result.stdout.strip():
+                cpu_info = result.stdout.strip()
+        except Exception:
+            pass
+
+        results = {
+            "run_id": run_id,
+            "tag": tag,
+            "timestamp": datetime.now().isoformat(),
+            "timeout_s": timeout_s,
+            "solvers": ["spinsat"],
+            "environment": {
+                "type": "cloud",
+                "provider": "gcp",
+                "project": self.project,
+                "machine_type": self.machine_type,
+                "cpu_platform": f"Intel Ice Lake ({cpu_info})",
+                "zone": self.zone,
+                "spot": self.spot,
+                "turbo_disabled": True,
+                "parallelism": self.parallelism,
+                "instance_name": self.instance_name,
+            },
+            "instances": raw_instances,
+        }
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Dry run
+    # ------------------------------------------------------------------
+
+    def print_plan(self, instances, timeout):
+        """Print what would happen without executing."""
+        n = len(instances)
+        est_runtime_s = (n / self.parallelism) * min(timeout, 300)
+        est_runtime_h = est_runtime_s / 3600
+
+        hourly_rate = 0.064 if self.spot else 0.29
+        est_cost = est_runtime_h * hourly_rate
+
+        print("=" * 60)
+        print("DRY RUN — Cloud Benchmark Plan")
+        print("=" * 60)
+        print(f"  Instance:    {self.instance_name}")
+        print(f"  Zone:        {self.zone}")
+        print(f"  Machine:     {self.machine_type}")
+        print(f"  CPU:         Intel Ice Lake (pinned)")
+        print(f"  Spot:        {self.spot}")
+        print(f"  Parallelism: {self.parallelism}")
+        print(f"  Max life:    {self.max_hours}h")
+        print()
+        print(f"  Instances:   {n} CNF files")
+        print(f"  Timeout:     {timeout}s per instance")
+        print(f"  Est. runtime: {est_runtime_h:.1f}h (assuming avg 300s/instance)")
+        print(f"  Est. cost:   ${est_cost:.2f} ({'spot' if self.spot else 'on-demand'})")
+        print()
+
+        # Check for existing instances
+        try:
+            result = self._gcloud([
+                "compute", "instances", "list",
+                "--filter", "name~spinsat-bench",
+                "--format", "table(name,zone,status)",
+            ])
+            if result.stdout.strip():
+                print("  ⚠ Existing benchmark instances found:")
+                print(result.stdout)
+        except Exception:
+            pass
+
+        # Check solver binary
+        musl_path = PROJECT_ROOT / "target" / "x86_64-unknown-linux-musl" / "release" / "spinsat"
+        if musl_path.exists():
+            size_mb = musl_path.stat().st_size / (1024 * 1024)
+            print(f"  Solver:      {musl_path.name} ({size_mb:.1f} MB)")
+        else:
+            print("  Solver:      NOT FOUND — will build musl target on launch")
+
+        print()
+        print("Run without --dry-run to execute.")
+
+    # ------------------------------------------------------------------
+    # Zombie cleanup
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def cleanup_instances(project=GCP_PROJECT):
+        """List and optionally delete leftover benchmark instances."""
+        result = subprocess.run(
+            [
+                "gcloud", "compute", "instances", "list",
+                "--filter", "name~spinsat-bench",
+                "--format", "table(name,zone,status,creationTimestamp)",
+                "--project", project,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        if not result.stdout.strip():
+            print("No benchmark instances found.")
+            return
+
+        print("Benchmark instances:")
+        print(result.stdout)
