@@ -87,6 +87,8 @@ Competition benchmarks are stored at the **rig level** so all crew/polecats can 
 ```
 /Users/seanbearden/gt/spinsat/benchmarks/
 ├── README.md                    # Index of benchmark sets
+├── sat2017/                     # SAT Competition 2017 Random Track (fla-barthel/komb/qhid for paper verification)
+├── sat2018/                     # SAT Competition 2018 Random Track (fla-barthel/komb/qhid for paper verification)
 └── sat2025/                     # SAT Competition 2025 Main Track (399 instances, 5.3GB)
     ├── track_main_2025.uri      # URL list from benchmark-database.de
     ├── download.sh              # Re-download script
