@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/seanbearden/SpinSAT/compare/v0.4.2...v0.5.0) - 2026-03-22
+
+### Added
+
+- add compile-time solution path tracing for dynamics investigation
+- DRAT proof logging for UNSAT certificates
+- bidirectional DMM-CaDiCaL cooperation with learned clause feedback
+- add UNSAT signal detection module with CaDiCaL handoff
+- add CaDiCaL CDCL fallback for UNSAT detection
+- integrate CaDiCaL CDCL solver via cadical-sys
+
+### Fixed
+
+- use flock to prevent merge race in cloud_worker.sh
+- add #[non_exhaustive] to SolveResult enum
+- prevent cloud benchmark result loss on SSH disconnect
+
+### Other
+
+- Add research memories: warm-start DMM, diffusion analogy, paper opportunities
+- Add --no-restart flag for continuous integration dynamics study
+- Fix preprocessing gate: use clause count instead of clause×literal product
+- add coverage for bidirectional DMM-CDCL cooperation
+- Guard preprocessing against O(n²) blowup on large instances
+- Fix index-out-of-bounds crash on clauses wider than 16 literals
+- Fix DB persistence across releases
+- Add requirements spec for hybrid DMM-CDCL cooperation
+- Add 2017/2018 Random Track benchmarks for paper verification
+- add conventional commits requirement to CLAUDE.md
+- Update CLAUDE.md with preprocessing docs and shared benchmark paths
+- Fix BVE variable reconstruction and add comprehensive preprocessing tests
+- Implement CNF preprocessing pipeline with 6 techniques
+
 ## [0.4.2](https://github.com/seanbearden/SpinSAT/compare/v0.4.1...v0.4.2) - 2026-03-22
 
 ### Other
