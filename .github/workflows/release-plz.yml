@@ -63,17 +63,21 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl
 
-      - name: Install musl toolchain with C++ support
+      - name: Install musl cross-compilation toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools musl-dev
+          # Download musl-cross toolchain with C++ support.
+          # This provides x86_64-linux-musl-g++ linked against musl libc.
+          curl -sSfL https://musl.cc/x86_64-linux-musl-cross.tgz | sudo tar xz -C /opt
+          echo "/opt/x86_64-linux-musl-cross/bin" >> $GITHUB_PATH
 
       - name: Build static binary
         env:
-          # CaDiCaL (via link-cplusplus/cc-rs) needs a C++ compiler for the musl target.
-          # cc-rs looks for CXX_x86_64_unknown_linux_musl first. The system g++ works
-          # because musl-tools provides the musl libc and Rust handles static linking.
-          CXX_x86_64_unknown_linux_musl: g++
+          # Point cc-rs to the musl cross-compiler for C++ (CaDiCaL)
+          CXX_x86_64_unknown_linux_musl: x86_64-linux-musl-g++
+          CC_x86_64_unknown_linux_musl: x86_64-linux-musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: x86_64-linux-musl-gcc
         run: cargo build --release --target x86_64-unknown-linux-musl
 
       - name: Copy benchmarks.db from previous release
