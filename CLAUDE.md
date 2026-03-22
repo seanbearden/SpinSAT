@@ -121,10 +121,19 @@ Modified competition variants exist in `~/Documents/DiVentraGroup/Factorization/
 ### CI/CD Workflows
 - `.github/workflows/ci.yml` — build, test, coverage (cargo-llvm-cov + nextest + Codecov)
 - `.github/workflows/release-plz.yml` — auto version bump + CHANGELOG + crates.io publish + build/attach static musl binary
+- `.github/workflows/deploy-pages.yml` — deploys dashboard to GitHub Pages, pulls benchmarks.db from latest release
 
 ### GitHub Secrets Required
 - `CODECOV_TOKEN` — Codecov upload
 - `CARGO_REGISTRY_TOKEN` — crates.io publish (scoped to spinsat crate)
+
+### Version Gotcha
+**Always rebuild before recording benchmarks.** The `--record` flag reads the version from the compiled binary (`spinsat --version`). If release-plz bumped `Cargo.toml` but you haven't run `cargo build --release`, the recorded version will be stale. Workflow:
+```bash
+cargo build --release           # picks up latest Cargo.toml version
+./target/release/spinsat -V     # verify correct version
+python3 scripts/benchmark_suite.py --suite ... --record --tag ...
+```
 
 ## Benchmarking
 
@@ -141,18 +150,26 @@ SQLite database in project root (gitignored, distributed via GitHub Releases). C
 # Initialize DB (one-time, snapshots meta.db)
 python3 scripts/init_benchmarks_db.py
 
+# Download competition instances from GBD
+python3 scripts/download_competition_instances.py --list-tracks
+python3 scripts/download_competition_instances.py --track random_2002 --result sat --limit 20
+
 # Official recorded benchmark (auto-detects version, commit, hardware, params)
-python3 scripts/benchmark_suite.py --suite large --record --tag v0.4.0
+python3 scripts/benchmark_suite.py --instances benchmarks/competition/random_2002/*.cnf --record --tag v0.4.1-competition
 
 # Development run (JSON only, no DB recording)
 python3 scripts/benchmark_suite.py --suite tiny --solver spinsat
 
-# Import competition reference data
-python3 scripts/import_competition_data.py --anni-csv <path>/anni-seq.csv
+# Import competition reference data (Anniversary Track: 5,355 instances x 28 solvers)
+git clone --depth 1 https://github.com/mathefuchs/al-for-sat-solver-benchmarking-data /tmp/al-sat
+python3 scripts/import_competition_data.py --anni-csv /tmp/al-sat/gbd-data/anni-seq.csv --anni-db /tmp/al-sat/gbd-data/base.db
+python3 scripts/import_competition_data.py --status
 
 # Refresh instance metadata from meta.db
 python3 scripts/init_benchmarks_db.py --refresh
 ```
+
+**Only benchmark against competition instances.** Generated/planted instances are for development smoke tests only — never record them to the DB.
 
 ### Auto-Detection (`--record` flag)
 The benchmark script auto-detects with zero manual input:
@@ -162,11 +179,27 @@ The benchmark script auto-detects with zero manual input:
 - Rust compiler version
 - ODE parameters from SpinSAT stderr (strategy, zeta, seed, restarts, method)
 
-### Dashboard
-- GitHub Pages: `docs/dashboard/index.html` (sql.js-httpvfs loads `docs/dashboard/benchmarks.db`)
-- Datasette Lite: browser-based SQL explorer (link in README)
-- **To update dashboard data**: `cp benchmarks.db docs/dashboard/benchmarks.db` then commit and push
-- The DB is served from GitHub Pages (same origin) — GitHub Releases URLs have CORS restrictions that block browser fetch
+### Dashboard & GitHub Pages
+
+**URL**: https://seanbearden.github.io/SpinSAT/
+
+The dashboard is deployed via GitHub Actions (`.github/workflows/deploy-pages.yml`), NOT from the `docs/` branch directly. The workflow downloads `benchmarks.db` from the latest GitHub Release at deploy time, so the DB is never committed to git.
+
+**To update dashboard data after recording new benchmarks:**
+```bash
+# 1. Upload updated DB to the latest release
+gh release upload <tag> benchmarks.db --clobber
+
+# 2. Trigger a redeploy (any of these will work)
+gh workflow run "Deploy Dashboard"                    # manual trigger
+# OR push a change to docs/dashboard/                # auto-triggers on path
+# OR merge a release-plz PR                          # auto-triggers on release
+```
+
+**Dashboard source**: `docs/dashboard/index.html` (sql.js-httpvfs, Chart.js)
+- Loads `benchmarks.db` from same origin (downloaded from Releases at deploy time)
+- Do NOT commit `benchmarks.db` to `docs/dashboard/` — it bloats git history
+- GitHub Pages source is set to "GitHub Actions" in repo settings (not "Deploy from branch")
 
 ## Development Rules
 
