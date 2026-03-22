@@ -1,3 +1,4 @@
+pub mod cdcl;
 pub mod dmm;
 pub mod formula;
 pub mod integrator;

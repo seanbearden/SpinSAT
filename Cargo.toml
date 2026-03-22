@@ -6,6 +6,8 @@ description = "A dynamic SAT solver based on digital memcomputing machines"
 license = "MIT"
 
 [dependencies]
+cadical-sys = "0.7.0"
+cxx = "1.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"
