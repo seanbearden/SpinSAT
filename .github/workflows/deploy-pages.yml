@@ -33,9 +33,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Download benchmarks.db from latest release
+      - name: Download benchmarks.db from releases
         run: |
-          gh release download --pattern 'benchmarks.db' --dir docs/dashboard/ --clobber || echo "No benchmarks.db in releases yet — dashboard will show empty state"
+          # Try each release (newest first) until we find one with benchmarks.db
+          for tag in $(gh release list --limit 10 --json tagName --jq '.[].tagName'); do
+            if gh release download "$tag" --pattern 'benchmarks.db' --dir docs/dashboard/ --clobber 2>/dev/null; then
+              echo "Downloaded benchmarks.db from release $tag"
+              exit 0
+            fi
+          done
+          echo "No benchmarks.db found in any release — dashboard will show empty state"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
