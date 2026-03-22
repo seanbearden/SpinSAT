@@ -78,6 +78,22 @@ The original MATLAB implementation used **forward-Euler** with adaptive time ste
 - **Competition track**: Experimental (no UNSAT proof certificates required)
 - **Integration methods**: Forward Euler (baseline), RK4, Trapezoid — hand-written, no external ODE library
 - **Generalized to k-SAT**: Not limited to 3-SAT; clause width detected from DIMACS input
+- **CNF preprocessing**: 6-technique pipeline (unit propagation, pure literal elimination, subsumption, self-subsuming resolution, BVE, failed literal probing) runs before ODE integration. Disable with `--no-preprocess`.
+
+### Shared Benchmarks
+
+Competition benchmarks are stored at the **rig level** so all crew/polecats can access them:
+
+```
+/Users/seanbearden/gt/spinsat/benchmarks/
+├── README.md                    # Index of benchmark sets
+└── sat2025/                     # SAT Competition 2025 Main Track (399 instances, 5.3GB)
+    ├── track_main_2025.uri      # URL list from benchmark-database.de
+    ├── download.sh              # Re-download script
+    └── *.cnf.xz                 # Compressed DIMACS CNF files (hash-prefixed names)
+```
+
+Files are xz-compressed. Decompress before use: `xz -dk <file.cnf.xz>`
 
 ### Build & Run
 
