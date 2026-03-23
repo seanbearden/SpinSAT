@@ -332,19 +332,27 @@ pub struct CdclFeedback {
     pub voltages: Option<Vec<f64>>,
 }
 
-/// Attempt CaDiCaL handoff with phase hints from DMM's best assignment.
+/// Attempt CaDiCaL handoff with phase hints and clause difficulty from DMM.
 /// Returns (result, feedback):
 /// - result: Some(SolveResult) if CaDiCaL resolves it, None if budget exhausted
 /// - feedback: CaDiCaL's learned info for DMM (always returned, even on Unknown)
 fn try_cdcl_handoff(
     formula: &Formula,
     best_assignment: &[bool],
+    x_l: Option<&[f64]>,
     conflict_budget: i32,
     proof_path: Option<&str>,
 ) -> (Option<SolveResult>, CdclFeedback) {
     let mut cdcl = CdclSolver::with_proof(formula, proof_path);
     cdcl.set_phase_from_assignment(best_assignment);
     cdcl.set_conflict_limit(conflict_budget);
+
+    // Seed CaDiCaL with frustrated variable assumptions from DMM's x_l
+    if let Some(xl) = x_l {
+        // Assume top 10% most frustrated variables (capped at 50)
+        let top_k = (formula.num_vars / 10).max(1).min(50);
+        cdcl.assume_frustrated_variables(formula, xl, best_assignment, top_k);
+    }
 
     let result = match cdcl.solve() {
         CdclResult::Sat(assignment) => {
@@ -509,6 +517,7 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
             let (result, feedback) = try_cdcl_handoff(
                 formula,
                 &best_assign,
+                Some(&state.x_l),
                 config.cdcl_conflict_budget,
                 config.proof_path.as_deref(),
             );
@@ -1128,7 +1137,7 @@ mod tests {
         let f = Formula::new(2, vec![vec![1], vec![1, 2]]);
         let assignment = vec![true, true];
 
-        let (result, feedback) = try_cdcl_handoff(&f, &assignment, 10_000, None);
+        let (result, feedback) = try_cdcl_handoff(&f, &assignment, None, 10_000, None);
 
         // Should be SAT
         assert!(matches!(result, Some(SolveResult::Sat(_))));
@@ -1153,7 +1162,7 @@ mod tests {
         let f = Formula::new(1, vec![vec![1], vec![-1]]);
         let assignment = vec![true];
 
-        let (result, feedback) = try_cdcl_handoff(&f, &assignment, 10_000, None);
+        let (result, feedback) = try_cdcl_handoff(&f, &assignment, None, 10_000, None);
 
         assert!(matches!(result, Some(SolveResult::Unsat)));
         assert!(

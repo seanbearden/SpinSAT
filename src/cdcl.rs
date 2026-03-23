@@ -96,6 +96,58 @@ impl CdclSolver {
         ffi::limit(&mut self.solver, "conflicts".to_string(), conflicts);
     }
 
+    /// Seed CaDiCaL with clause difficulty information from DMM's long-term memory.
+    ///
+    /// Uses CaDiCaL's `assume()` to force early decisions on variables that appear
+    /// in the most frustrated clauses (highest x_l values). This drives CaDiCaL's
+    /// conflict analysis toward the hard region of the formula, producing more
+    /// relevant learned clauses.
+    ///
+    /// Based on Deep Cooperation "Conflict Frequency" technique (Cai et al., IJCAI 2022),
+    /// adapted from local-search conflict frequency to DMM long-term memory.
+    ///
+    /// - `formula`: the SAT formula (to map clauses → variables)
+    /// - `x_l`: long-term memory values per clause
+    /// - `best_assignment`: DMM's best assignment (determines polarity for assumptions)
+    /// - `top_k`: number of top frustrated variables to assume
+    pub fn assume_frustrated_variables(
+        &mut self,
+        formula: &crate::formula::Formula,
+        x_l: &[f64],
+        best_assignment: &[bool],
+        top_k: usize,
+    ) {
+        // Score each variable by the total x_l of clauses it appears in
+        let mut var_frustration = vec![0.0f64; formula.num_vars];
+        for (m, &xl) in x_l.iter().enumerate() {
+            if m >= formula.num_clauses() {
+                break;
+            }
+            for &(var_idx, _) in formula.clause(m) {
+                var_frustration[var_idx] += xl;
+            }
+        }
+
+        // Find top-k most frustrated variables
+        let mut indices: Vec<usize> = (0..formula.num_vars).collect();
+        indices.sort_unstable_by(|&a, &b| {
+            var_frustration[b]
+                .partial_cmp(&var_frustration[a])
+                .unwrap()
+        });
+
+        let k = top_k.min(formula.num_vars);
+        for &var_idx in &indices[..k] {
+            let lit = (var_idx as i32 + 1)
+                * if best_assignment.get(var_idx).copied().unwrap_or(true) {
+                    1
+                } else {
+                    -1
+                };
+            ffi::assume(&mut self.solver, lit);
+        }
+    }
+
     /// Solve the formula. Returns the result.
     pub fn solve(&mut self) -> CdclResult {
         let status = ffi::solve(&mut self.solver);
@@ -314,5 +366,48 @@ mod tests {
         // Proof file should exist (even for SAT, it records the search)
         assert!(proof_path.exists(), "Proof file should be created");
         let _ = std::fs::remove_file(&proof_path);
+    }
+
+    #[test]
+    fn test_assume_frustrated_variables() {
+        // Formula with 3 vars, 4 clauses. Clause 0 has high x_l (frustrated).
+        let formula = Formula::new(3, vec![
+            vec![1, 2, 3],     // clause 0: uses vars 0,1,2
+            vec![-1, 2],       // clause 1: uses vars 0,1
+            vec![2, -3],       // clause 2: uses vars 1,2
+            vec![1, 3],        // clause 3: uses vars 0,2
+        ]);
+        let x_l = vec![100.0, 1.0, 1.0, 1.0]; // clause 0 very frustrated
+        let assignment = vec![true, true, true];
+
+        let mut cdcl = CdclSolver::new(&formula);
+        cdcl.assume_frustrated_variables(&formula, &x_l, &assignment, 2);
+
+        // Should still solve correctly with assumptions
+        match cdcl.solve() {
+            CdclResult::Sat(a) => assert!(formula.verify(&a)),
+            CdclResult::Unsat => panic!("Formula is SAT"),
+            CdclResult::Unknown => {} // assumptions may cause Unknown, acceptable
+        }
+    }
+
+    #[test]
+    fn test_assume_frustrated_on_unsat() {
+        // UNSAT formula — assumptions should not prevent UNSAT detection
+        let formula = Formula::new(2, vec![
+            vec![1, 2], vec![-1, 2], vec![1, -2], vec![-1, -2],
+        ]);
+        let x_l = vec![10.0, 20.0, 5.0, 15.0]; // varying frustration
+        let assignment = vec![true, false];
+
+        let mut cdcl = CdclSolver::new(&formula);
+        cdcl.assume_frustrated_variables(&formula, &x_l, &assignment, 2);
+
+        match cdcl.solve() {
+            CdclResult::Unsat => {} // expected
+            // With assumptions, CaDiCaL may also return Unknown (failed assumptions)
+            CdclResult::Unknown => {}
+            CdclResult::Sat(_) => panic!("Formula is UNSAT"),
+        }
     }
 }
