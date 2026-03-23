@@ -442,13 +442,14 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
     // more of the remaining time budget.
     let mut dmm_confidence: f64 = 1.0; // 1.0 = full confidence, 0.0 = no confidence
     let mut consecutive_stagnant: u32 = 0;
-    let confidence_decay: f64 = 0.2; // decay per stagnant restart
+    let confidence_decay: f64 = 0.4; // very aggressive decay per stagnant restart
     let confidence_boost: f64 = 0.05; // small boost on improvement (new best only)
-    let min_dmm_share: f64 = 0.1; // DMM always gets at least 10% of remaining time
+    let min_dmm_share: f64 = 0.05; // DMM gets at least 5% of remaining time
 
     // Initial DMM budget: if fallback enabled, use adaptive; otherwise full timeout
     let dmm_timeout = if config.cdcl_fallback {
-        config.timeout_secs * 0.7
+        // Give DMM only 40% initially — CaDiCaL needs the lion's share for UNSAT
+        config.timeout_secs * 0.4
     } else {
         config.timeout_secs
     };
@@ -598,9 +599,12 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
         if attempt.best_unsat < best_unsat_ever {
             best_unsat_ever = attempt.best_unsat;
             best_voltages = state.v.clone();
-            // Improvement → small confidence boost (not full reset)
-            consecutive_stagnant = 0;
-            dmm_confidence = (dmm_confidence + confidence_boost).min(1.0);
+            if restart_count > 0 {
+                // Only boost confidence for improvements AFTER the first attempt.
+                // The first attempt always "improves" from num_clauses — not meaningful.
+                consecutive_stagnant = 0;
+                dmm_confidence = (dmm_confidence + confidence_boost).min(1.0);
+            }
         } else {
             // Stagnation → decay confidence
             consecutive_stagnant += 1;
@@ -608,13 +612,13 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
         }
 
         // Adaptive CaDiCaL attempt: when DMM confidence is low, try CaDiCaL mid-solve
-        if config.cdcl_fallback && consecutive_stagnant >= 2 && dmm_confidence < 0.6 {
+        if config.cdcl_fallback && consecutive_stagnant >= 1 && dmm_confidence < 0.7 {
             let remaining = config.timeout_secs - start.elapsed().as_secs_f64();
             if remaining > 1.0 {
                 // Give CaDiCaL a budget proportional to (1 - confidence)
-                let cdcl_share = (1.0 - dmm_confidence) * 0.3; // up to 30% of remaining
+                let cdcl_share = (1.0 - dmm_confidence) * 0.5; // up to 50% of remaining
                 let cdcl_budget = (remaining * cdcl_share * 100_000.0) as i32;
-                let cdcl_budget = cdcl_budget.max(50_000);
+                let cdcl_budget = cdcl_budget.max(100_000);
 
                 let best_assign = extract_assignment(&best_voltages);
                 eprintln!(
@@ -845,9 +849,9 @@ fn cdcl_fallback(
     eprintln!("c CDCL seeded with top {} frustrated variable assumptions from x_l", top_k);
 
     // Set a conflict limit proportional to remaining time.
-    // ~100K conflicts/sec is a rough estimate for CaDiCaL throughput.
-    let conflict_limit = (remaining * 100_000.0) as i32;
-    cdcl.set_conflict_limit(conflict_limit.max(100_000));
+    // ~500K conflicts/sec is a rough estimate for CaDiCaL throughput.
+    let conflict_limit = (remaining * 500_000.0) as i32;
+    cdcl.set_conflict_limit(conflict_limit.max(500_000));
 
     eprintln!("c CDCL conflict limit: {}", conflict_limit.max(100_000));
 
