@@ -437,9 +437,18 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
     let mut probe_complete = false;
     let mut probe_winner: Option<Method> = None;
 
-    // When CDCL fallback is enabled, reserve time for CaDiCaL
+    // Adaptive DMM/CaDiCaL budget: DMM confidence starts high and decays
+    // with consecutive stagnant restarts. As confidence drops, CaDiCaL gets
+    // more of the remaining time budget.
+    let mut dmm_confidence: f64 = 1.0; // 1.0 = full confidence, 0.0 = no confidence
+    let mut consecutive_stagnant: u32 = 0;
+    let confidence_decay: f64 = 0.2; // decay per stagnant restart
+    let confidence_boost: f64 = 0.05; // small boost on improvement (new best only)
+    let min_dmm_share: f64 = 0.1; // DMM always gets at least 10% of remaining time
+
+    // Initial DMM budget: if fallback enabled, use adaptive; otherwise full timeout
     let dmm_timeout = if config.cdcl_fallback {
-        config.timeout_secs * 0.5
+        config.timeout_secs * 0.7
     } else {
         config.timeout_secs
     };
@@ -585,10 +594,90 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
             continue;
         }
 
-        // Track best voltages across all restarts
+        // Track best voltages across all restarts and update confidence
         if attempt.best_unsat < best_unsat_ever {
             best_unsat_ever = attempt.best_unsat;
             best_voltages = state.v.clone();
+            // Improvement → small confidence boost (not full reset)
+            consecutive_stagnant = 0;
+            dmm_confidence = (dmm_confidence + confidence_boost).min(1.0);
+        } else {
+            // Stagnation → decay confidence
+            consecutive_stagnant += 1;
+            dmm_confidence = (dmm_confidence - confidence_decay).max(0.0);
+        }
+
+        // Adaptive CaDiCaL attempt: when DMM confidence is low, try CaDiCaL mid-solve
+        if config.cdcl_fallback && consecutive_stagnant >= 2 && dmm_confidence < 0.6 {
+            let remaining = config.timeout_secs - start.elapsed().as_secs_f64();
+            if remaining > 1.0 {
+                // Give CaDiCaL a budget proportional to (1 - confidence)
+                let cdcl_share = (1.0 - dmm_confidence) * 0.3; // up to 30% of remaining
+                let cdcl_budget = (remaining * cdcl_share * 100_000.0) as i32;
+                let cdcl_budget = cdcl_budget.max(50_000);
+
+                let best_assign = extract_assignment(&best_voltages);
+                eprintln!(
+                    "c Adaptive CDCL attempt: confidence={:.2}, stagnant={}, budget={} conflicts (elapsed: {:.1}s)",
+                    dmm_confidence, consecutive_stagnant, cdcl_budget, start.elapsed().as_secs_f64()
+                );
+
+                let (result, feedback) = try_cdcl_handoff(
+                    formula,
+                    &best_assign,
+                    Some(&state.x_l),
+                    cdcl_budget,
+                    config.proof_path.as_deref(),
+                );
+
+                if let Some(result) = result {
+                    match &result {
+                        SolveResult::Sat(_) => eprintln!(
+                            "c Adaptive CDCL found SAT (elapsed: {:.1}s)",
+                            start.elapsed().as_secs_f64()
+                        ),
+                        SolveResult::Unsat => eprintln!(
+                            "c Adaptive CDCL proved UNSAT (elapsed: {:.1}s)",
+                            start.elapsed().as_secs_f64()
+                        ),
+                        SolveResult::Unknown => unreachable!(),
+                    }
+                    return result;
+                }
+
+                // Incorporate feedback: add fixed literals, smart restart
+                let num_fixed = feedback.fixed_literals.len();
+                for &lit in &feedback.fixed_literals {
+                    formula.add_clause(&[lit]);
+                }
+                if num_fixed > 0 || feedback.voltages.is_some() {
+                    if let Some(ref cdcl_voltages) = feedback.voltages {
+                        state.restart_with_feedback(formula, cdcl_voltages);
+                    } else {
+                        state.restart_with_feedback(formula, &best_voltages);
+                    }
+                    derivs = Derivatives::new(formula.num_vars, formula.num_clauses());
+                    let needs_scratch = !matches!(config.strategy, Strategy::Fixed(Method::Euler));
+                    scratch = if needs_scratch {
+                        ScratchBuffers::new(formula, &state)
+                    } else {
+                        ScratchBuffers::empty()
+                    };
+                }
+
+                if num_fixed > 0 {
+                    eprintln!(
+                        "c Adaptive CDCL: {} fixed lits learned, {} total clauses, resuming DMM",
+                        num_fixed, formula.num_clauses()
+                    );
+                }
+
+                // Reset stagnation counter after CaDiCaL attempt
+                consecutive_stagnant = 0;
+                if let Some(ref mut detector) = signal_detector {
+                    detector.reset_for_restart();
+                }
+            }
         }
 
         // Update stats
@@ -626,8 +715,25 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
             );
         }
 
-        // Check DMM timeout
-        if start.elapsed().as_secs_f64() >= dmm_timeout {
+        // Check DMM timeout — adaptive: as confidence drops, DMM gets less time
+        let effective_timeout = if config.cdcl_fallback {
+            let dmm_share = min_dmm_share + (1.0 - min_dmm_share) * dmm_confidence;
+            config.timeout_secs * dmm_share
+        } else {
+            dmm_timeout
+        };
+        if start.elapsed().as_secs_f64() >= effective_timeout {
+            if config.cdcl_fallback {
+                eprintln!(
+                    "c DMM budget exhausted: confidence={:.2}, dmm_share={:.0}%",
+                    dmm_confidence,
+                    if config.cdcl_fallback {
+                        (min_dmm_share + (1.0 - min_dmm_share) * dmm_confidence) * 100.0
+                    } else {
+                        100.0
+                    }
+                );
+            }
             break;
         }
 
