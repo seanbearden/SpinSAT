@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::cdcl::{CdclResult, CdclSolver};
 use crate::dmm::{count_unsat, extract_assignment, is_solved, Derivatives, DmmState, Params};
 use crate::formula::Formula;
-use crate::integrator::{integration_step, integration_step_with_engine, DerivEngine, Method, ScratchBuffers};
+use crate::integrator::{integration_step_with_engine, DerivEngine, Method, ScratchBuffers};
 use crate::unsat_signal::{SignalConfig, SignalKind, UnsatSignalDetector};
 
 #[cfg(feature = "trace")]

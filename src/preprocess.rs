@@ -561,6 +561,7 @@ impl PreprocessState {
         }
     }
 
+    #[allow(dead_code)]
     fn count_occurrences(&self, var: usize) -> usize {
         let lit_pos = var as i32;
         let lit_neg = -(var as i32);

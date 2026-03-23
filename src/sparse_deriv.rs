@@ -27,6 +27,7 @@ struct WidthGroup {
     matrices: Vec<CsrMatrix>,
     /// Fused CSR matrix (num_vars × k*group_size) for rigidity term.
     /// Concatenates all k position matrices horizontally.
+    #[allow(dead_code)]
     fused_matrix: CsrMatrix,
 }
 
@@ -45,6 +46,7 @@ struct Scratch {
     /// RHS for gradient SpMV: rhs[pos] = c_others[pos] * fs.
     rhs_grad: Vec<Vec<f64>>,
     /// RHS for fused rigidity SpMV (length k * group_size).
+    #[allow(dead_code)]
     rhs_rigid: Vec<f64>,
 }
 
@@ -52,6 +54,7 @@ struct Scratch {
 pub struct SparseDerivEngine {
     groups: Vec<WidthGroup>,
     scratch: Scratch,
+    #[allow(dead_code)]
     num_vars: usize,
 }
 
