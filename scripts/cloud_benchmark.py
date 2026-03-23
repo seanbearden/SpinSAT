@@ -358,49 +358,93 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
         self._ssh(launch_cmd, timeout=30)
         print("  Worker launched (detached via nohup)")
 
+        # Wait briefly for worker to initialize
+        time.sleep(5)
+
         # Poll for progress, streaming output
         print("  Monitoring progress (Ctrl+C safe — worker continues on VM)...")
         last_line_count = 0
+        consecutive_failures = 0
+        max_consecutive_failures = 10
+        poll_interval = 15
+        ssh_timeout = 30
+
         while True:
             try:
-                time.sleep(10)
-                # Check status
-                result = self._ssh(
-                    "cat /tmp/spinsat_status 2>/dev/null || echo unknown",
-                    timeout=15,
-                )
-                status = result.stdout.strip() if hasattr(result, "stdout") else "unknown"
+                time.sleep(poll_interval)
 
-                # Stream new log lines
-                result = self._ssh(
-                    f"tail -n +{last_line_count + 1} /tmp/worker_stdout.log 2>/dev/null | head -100",
-                    timeout=15,
+                # Single SSH call to get status + log lines + process check
+                poll_cmd = (
+                    f"echo STATUS=$(cat /tmp/spinsat_status 2>/dev/null || echo unknown);"
+                    f"echo RESULTS=$(sudo ls /tmp/spinsat_results/*.json 2>/dev/null | wc -l);"
+                    f"echo PROC=$(pgrep -f cloud_worker.sh > /dev/null 2>&1 && echo running || echo stopped);"
+                    f"tail -n +{last_line_count + 1} /tmp/worker_stdout.log 2>/dev/null | head -50"
                 )
-                if hasattr(result, "stdout") and result.stdout.strip():
-                    lines = result.stdout.strip().split("\n")
-                    for line in lines:
-                        print(line)
-                    last_line_count += len(lines)
+                result = self._ssh(poll_cmd, timeout=ssh_timeout)
+
+                if result.returncode != 0:
+                    consecutive_failures += 1
+                    if consecutive_failures >= max_consecutive_failures:
+                        print(f"\n  SSH failed {max_consecutive_failures}x consecutively. Giving up on polling.")
+                        print(f"  Worker continues on VM: {self.instance_name}")
+                        print(f"  Recover: --cloud-recover {self.instance_name} --cloud-zone {self.zone}")
+                        break
+                    print(f"  SSH poll returned non-zero (attempt {consecutive_failures}/{max_consecutive_failures})")
+                    continue
+
+                consecutive_failures = 0
+                output = result.stdout
+
+                # Parse status line
+                status = "unknown"
+                results_count = "?"
+                proc_status = "unknown"
+                log_lines = []
+
+                for line in output.split("\n"):
+                    if line.startswith("STATUS="):
+                        status = line.split("=", 1)[1].strip()
+                    elif line.startswith("RESULTS="):
+                        results_count = line.split("=", 1)[1].strip()
+                    elif line.startswith("PROC="):
+                        proc_status = line.split("=", 1)[1].strip()
+                    elif line.strip():
+                        log_lines.append(line)
+
+                # Print new log lines
+                for line in log_lines:
+                    print(line)
+                last_line_count += len(log_lines)
 
                 if status == "completed":
-                    print("  Worker completed.")
+                    print(f"  Worker completed. ({results_count} results)")
                     break
 
-                # Check if worker process is still running
-                result = self._ssh(
-                    "pgrep -f cloud_worker.sh > /dev/null 2>&1 && echo running || echo stopped",
-                    timeout=15,
-                )
-                proc_status = result.stdout.strip() if hasattr(result, "stdout") else "unknown"
                 if proc_status == "stopped" and status != "completed":
-                    print("  WARNING: Worker stopped but status is not 'completed'")
-                    print("  Partial results may be available in /tmp/results.json")
+                    print(f"  WARNING: Worker stopped but status='{status}' ({results_count} results)")
+                    print("  Partial results available in /tmp/results.json")
                     break
 
-            except (subprocess.TimeoutExpired, Exception) as e:
-                print(f"  SSH poll failed ({e}), retrying in 30s...")
-                print(f"  Worker continues on VM. Recovery: --cloud-recover {self.instance_name}")
-                time.sleep(30)
+            except subprocess.TimeoutExpired:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    print(f"\n  SSH timed out {max_consecutive_failures}x consecutively. Giving up on polling.")
+                    print(f"  Worker continues on VM: {self.instance_name}")
+                    print(f"  Recover: --cloud-recover {self.instance_name} --cloud-zone {self.zone}")
+                    break
+                print(f"  SSH timeout (attempt {consecutive_failures}/{max_consecutive_failures}), retrying in {poll_interval}s...")
+
+            except KeyboardInterrupt:
+                raise
+
+            except Exception as e:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    print(f"\n  Polling failed {max_consecutive_failures}x. Giving up.")
+                    print(f"  Worker continues on VM: {self.instance_name}")
+                    print(f"  Recover: --cloud-recover {self.instance_name} --cloud-zone {self.zone}")
+                    break
+                print(f"  Poll error ({e}), retrying...")
 
         return "/tmp/results.json"
 
