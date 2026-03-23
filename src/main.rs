@@ -20,7 +20,7 @@ fn main() {
     let mut proof_path: Option<String> = None;
     let mut detect_unsat = false;
     let mut no_restart = false;
-    let mut restart_mode = RestartMode::Cold;
+    let mut restart_mode = RestartMode::Cycling;
     let mut restart_noise: f64 = 0.1;
     let mut xl_decay: f64 = 0.3;
     let mut use_sparse_engine = false;
@@ -145,7 +145,7 @@ fn main() {
                     eprintln!("      --trace-output <p> Trace output file (default: trace.bin)");
                     eprintln!("      --trace-memory     Also trace x_s and x_l memory variables");
                 }
-                eprintln!("  -r, --restart-mode <m>  Restart mode: cold, warm, anti-phase, cycling (default: cold)");
+                eprintln!("  -r, --restart-mode <m>  Restart mode: cold, warm, anti-phase, cycling (default: cycling)");
                 eprintln!("      --restart-noise <v> Noise scale for warm/anti-phase restarts (default: 0.1)");
                 eprintln!("      --xl-decay <v>      x_l decay factor for warm restarts (default: 0.3)");
                 eprintln!("      --no-restart       Disable restarts (single continuous integration run)");
