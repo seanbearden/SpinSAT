@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1](https://github.com/seanbearden/SpinSAT/compare/v0.5.0...v0.5.1) - 2026-03-23
+
+### Added
+
+- make cycling the default restart mode
+- add restart mode A/B comparison script
+- adaptive DMM/CaDiCaL time budget with confidence decay
+- transfer DMM clause difficulty (x_l) to CaDiCaL via frustrated variable assumptions
+- add sparse matrix derivative engine (challenger)
+- add warm restart modes — voltage saving, x_l decay, anti-phase
+
+### Fixed
+
+- pass x_l clause difficulty to CaDiCaL in fallback path
+- disable semver-checks for pre-1.0 releases
+- add conflict limit to CDCL fallback to prevent unbounded solving
+- use cross for musl static binary build
+- use musl-cross toolchain for static binary build
+- add workflow_dispatch to release workflow for manual binary builds
+- provide C++ compiler for musl static binary build
+
+### Other
+
+- tune adaptive budget to solve 5/5 on competition UNSAT instance
+- add hybrid DMM-CaDiCaL benchmark results to Serena memories
+- fix 5 compiler warnings
+
 ## [0.5.0](https://github.com/seanbearden/SpinSAT/compare/v0.4.2...v0.5.0) - 2026-03-22
 
 ### Added
