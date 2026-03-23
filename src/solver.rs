@@ -89,6 +89,9 @@ impl RestartMode {
 }
 
 /// Solver configuration.
+///
+/// Use `SolverConfig::default()` with field overrides — new fields may be
+/// added in minor versions.
 pub struct SolverConfig {
     pub timeout_secs: f64,
     pub initial_seed: u64,

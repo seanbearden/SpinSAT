@@ -7,3 +7,6 @@ git_tag_enable = true
 name = "spinsat"
 # Only bump version when source code or Cargo.toml changes
 release = true
+# We're pre-1.0: adding struct fields and enum variants is expected in minor
+# releases. Callers use ..Default::default() so new fields don't break them.
+semver_check = false
