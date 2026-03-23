@@ -699,7 +699,7 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
 
     // DMM exhausted its budget without finding SAT
     if config.cdcl_fallback {
-        cdcl_fallback(formula, &best_voltages, best_unsat_ever, config, &start)
+        cdcl_fallback(formula, &best_voltages, &state.x_l, best_unsat_ever, config, &start)
     } else {
         SolveResult::Unknown
     }
@@ -712,6 +712,7 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
 fn cdcl_fallback(
     formula: &Formula,
     best_voltages: &[f64],
+    x_l: &[f64],
     best_unsat: usize,
     config: &SolverConfig,
     start: &Instant,
@@ -730,6 +731,12 @@ fn cdcl_fallback(
 
     // Set phase hints from DMM's best voltage assignment (Deep Cooperation: LS Rephasing)
     cdcl.set_phase_from_voltages(best_voltages);
+
+    // Seed CaDiCaL with frustrated variable assumptions from DMM's x_l
+    let best_assignment: Vec<bool> = best_voltages.iter().map(|&v| v >= 0.0).collect();
+    let top_k = (formula.num_vars / 10).max(1).min(50);
+    cdcl.assume_frustrated_variables(formula, x_l, &best_assignment, top_k);
+    eprintln!("c CDCL seeded with top {} frustrated variable assumptions from x_l", top_k);
 
     // Set a conflict limit proportional to remaining time.
     // ~100K conflicts/sec is a rough estimate for CaDiCaL throughput.
