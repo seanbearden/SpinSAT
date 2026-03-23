@@ -21,8 +21,8 @@ fn main() {
     let mut detect_unsat = false;
     let mut no_restart = false;
     let mut restart_mode = RestartMode::Cycling;
-    let mut restart_noise: f64 = 0.1;
-    let mut xl_decay: f64 = 0.3;
+    let mut restart_noise: f64 = 0.05;
+    let mut xl_decay: f64 = 0.5;
     let mut use_sparse_engine = false;
     #[cfg(feature = "trace")]
     let mut trace_mode: Option<String> = None;
@@ -146,8 +146,8 @@ fn main() {
                     eprintln!("      --trace-memory     Also trace x_s and x_l memory variables");
                 }
                 eprintln!("  -r, --restart-mode <m>  Restart mode: cold, warm, anti-phase, cycling (default: cycling)");
-                eprintln!("      --restart-noise <v> Noise scale for warm/anti-phase restarts (default: 0.1)");
-                eprintln!("      --xl-decay <v>      x_l decay factor for warm restarts (default: 0.3)");
+                eprintln!("      --restart-noise <v> Noise scale for warm/anti-phase restarts (default: 0.05)");
+                eprintln!("      --xl-decay <v>      x_l decay factor for warm restarts (default: 0.5)");
                 eprintln!("      --no-restart       Disable restarts (single continuous integration run)");
                 eprintln!("      --sparse-engine    Use sparse matrix derivative engine (challenger)");
                 eprintln!("  -V, --version          Print version");
