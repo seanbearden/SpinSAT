@@ -184,6 +184,10 @@ struct AttemptResult {
     wall_time: f64,
     solution: Option<Vec<bool>>,
     signal_fired: Option<SignalKind>,
+    /// Peak x_l value observed during this attempt.
+    peak_xl_max: f64,
+    /// Last adaptive time step used in this attempt.
+    final_dt: f64,
 }
 
 /// Run one restart attempt with the given method.
@@ -209,8 +213,17 @@ fn run_attempt(
     let mut stagnation_counter: u32 = 0;
     let step_limit = max_steps.unwrap_or(u64::MAX);
     let mut signal_fired: Option<SignalKind> = None;
+    let mut peak_xl_max: f64 = 0.0;
+    let mut last_dt: f64 = 0.0;
     loop {
-        integration_step_with_engine(method, formula, state, params, derivs, scratch, -1.0, engine);
+        last_dt = integration_step_with_engine(method, formula, state, params, derivs, scratch, -1.0, engine);
+
+        // Track peak x_l value across all clauses
+        for &xl in &state.x_l {
+            if xl > peak_xl_max {
+                peak_xl_max = xl;
+            }
+        }
         step += 1;
 
         // Solution path trace recording (no-op when trace feature is off)
@@ -229,6 +242,8 @@ fn run_attempt(
                     wall_time: start.elapsed().as_secs_f64() - attempt_start,
                     solution: Some(assignment),
                     signal_fired: None,
+                    peak_xl_max,
+                    final_dt: last_dt,
                 };
             }
         }
@@ -271,6 +286,8 @@ fn run_attempt(
         wall_time,
         solution: None,
         signal_fired,
+        peak_xl_max,
+        final_dt: last_dt,
     }
 }
 
@@ -432,6 +449,8 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
     let mut restart_count: u32 = 0;
     let mut best_unsat_ever = formula.num_clauses();
     let mut best_voltages: Vec<f64> = state.v.clone();
+    let mut global_peak_xl_max: f64 = 0.0;
+    let mut global_final_dt: f64 = 0.0;
     let mut euler_stats = MethodStats::new(formula.num_clauses());
     let mut trap_stats = MethodStats::new(formula.num_clauses());
     let mut probe_complete = false;
@@ -495,6 +514,12 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
             &mut engine,
         );
 
+        // Track global diagnostics across all restarts
+        if attempt.peak_xl_max > global_peak_xl_max {
+            global_peak_xl_max = attempt.peak_xl_max;
+        }
+        global_final_dt = attempt.final_dt;
+
         // Check if solved
         if let Some(assignment) = attempt.solution {
             #[cfg(feature = "trace")]
@@ -508,6 +533,8 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
                 method,
                 start.elapsed().as_secs_f64()
             );
+            eprintln!("c peak_xl_max: {:.6e}", global_peak_xl_max);
+            eprintln!("c final_dt: {:.6e}", global_final_dt);
             return SolveResult::Sat(assignment);
         }
 
@@ -550,6 +577,8 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
                     }
                     SolveResult::Unknown => unreachable!(),
                 }
+                eprintln!("c peak_xl_max: {:.6e}", global_peak_xl_max);
+                eprintln!("c final_dt: {:.6e}", global_final_dt);
                 return result;
             }
 
@@ -646,6 +675,8 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
                         ),
                         SolveResult::Unknown => unreachable!(),
                     }
+                    eprintln!("c peak_xl_max: {:.6e}", global_peak_xl_max);
+                    eprintln!("c final_dt: {:.6e}", global_final_dt);
                     return result;
                 }
 
@@ -806,6 +837,10 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
         let _ = t.finish();
         eprintln!("c Trace: file written");
     }
+
+    // Emit diagnostics before exit
+    eprintln!("c peak_xl_max: {:.6e}", global_peak_xl_max);
+    eprintln!("c final_dt: {:.6e}", global_final_dt);
 
     // DMM exhausted its budget without finding SAT
     if config.cdcl_fallback {
