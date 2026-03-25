@@ -18,6 +18,7 @@ import json
 import os
 import platform
 import re
+import resource
 import sqlite3
 import subprocess
 import sys
@@ -184,7 +185,13 @@ def parse_spinsat_stderr(stderr):
         "zeta": None,
         "strategy": None,
         "seed": None,
+        "peak_xl_max": None,
+        "final_dt": None,
+        "restart_strategy": None,
+        "preprocessing": None,
     }
+
+    preprocess_techniques = []
 
     for line in stderr.splitlines():
         # "c Parameters: strategy=Fixed(Euler), zeta=1e-3, seed=1"
@@ -203,10 +210,53 @@ def parse_spinsat_stderr(stderr):
             info["restarts"] = int(m.group(1))
             info["method_used"] = m.group(2)
 
-        # "c Restart 5 Euler ..."
-        m = re.search(r"Restart (\d+)", line)
+        # "c Restart 5 Euler Cycling ..." or "c Restart 5 Euler Cold ..."
+        m = re.search(r"Restart (\d+)\s+\S+\s+(\S+)", line)
         if m:
             info["restarts"] = max(info["restarts"], int(m.group(1)))
+            info["restart_strategy"] = m.group(2)
+
+        # "c peak_xl_max: 2.982051e1"
+        m = re.search(r"peak_xl_max:\s*([^\s]+)", line)
+        if m:
+            try:
+                info["peak_xl_max"] = float(m.group(1))
+            except ValueError:
+                pass
+
+        # "c final_dt: 1.689207e-1"
+        m = re.search(r"final_dt:\s*([^\s]+)", line)
+        if m:
+            try:
+                info["final_dt"] = float(m.group(1))
+            except ValueError:
+                pass
+
+        # "c   unit_prop=0, pure_lit=3, subsump=0, self_sub=3, bve=0, probe=0"
+        m = re.search(r"unit_prop=(\d+).*pure_lit=(\d+).*subsump=(\d+).*self_sub=(\d+).*bve=(\d+).*probe=(\d+)", line)
+        if m:
+            technique_names = ["unit_prop", "pure_lit", "subsump", "self_sub", "bve", "probe"]
+            for name, count_str in zip(technique_names, m.groups()):
+                if int(count_str) > 0:
+                    preprocess_techniques.append(name)
+
+        # "c Solved by preprocessing alone!"
+        if "Solved by preprocessing alone" in line:
+            preprocess_techniques.append("solved_by_preprocess")
+
+        # "c Preprocessing: 50 vars → 47, 215 clauses → 210 ..."
+        if "Preprocessing:" in line:
+            info["preprocessing"] = "enabled"
+
+    # Summarize preprocessing
+    if info["preprocessing"] == "enabled":
+        if preprocess_techniques:
+            info["preprocessing"] = ",".join(preprocess_techniques)
+        else:
+            info["preprocessing"] = "none_applied"
+    elif "no-preprocess" not in str(info.get("strategy", "")):
+        # No preprocessing output seen — likely disabled
+        info["preprocessing"] = "disabled"
 
     return info
 
@@ -288,13 +338,20 @@ def run_solver(solver_name, cnf_path, timeout):
     num_vars, num_clauses = get_instance_info(cnf_path)
     ratio = num_clauses / num_vars if num_vars > 0 else 0
 
-    start = time.time()
+    start_wall = time.time()
+    start_rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
     try:
         result = subprocess.run(
             cmd, capture_output=True, text=True,
             timeout=timeout
         )
-        elapsed = time.time() - start
+        wall_clock_s = round(time.time() - start_wall, 6)
+        end_rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        cpu_time_s = round(
+            (end_rusage.ru_utime - start_rusage.ru_utime)
+            + (end_rusage.ru_stime - start_rusage.ru_stime), 6
+        )
+
         status, assignment = parse_solver_output(result.stdout, result.stderr)
 
         # Parse SpinSAT-specific stderr
@@ -314,7 +371,9 @@ def run_solver(solver_name, cnf_path, timeout):
 
         return {
             "status": status,
-            "time_s": round(elapsed, 4),
+            "time_s": round(wall_clock_s, 4),
+            "wall_clock_s": wall_clock_s,
+            "cpu_time_s": cpu_time_s,
             "verified": verified,
             "num_vars": num_vars,
             "num_clauses": num_clauses,
@@ -323,10 +382,17 @@ def run_solver(solver_name, cnf_path, timeout):
         }
 
     except subprocess.TimeoutExpired:
-        elapsed = time.time() - start
+        wall_clock_s = round(time.time() - start_wall, 6)
+        end_rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        cpu_time_s = round(
+            (end_rusage.ru_utime - start_rusage.ru_utime)
+            + (end_rusage.ru_stime - start_rusage.ru_stime), 6
+        )
         return {
             "status": "TIMEOUT",
-            "time_s": round(elapsed, 4),
+            "time_s": round(wall_clock_s, 4),
+            "wall_clock_s": wall_clock_s,
+            "cpu_time_s": cpu_time_s,
             "verified": "N/A",
             "num_vars": num_vars,
             "num_clauses": num_clauses,
@@ -432,6 +498,28 @@ def save_results(results, suite_name="custom"):
     return fpath
 
 
+def update_competition_best(conn):
+    """Update competition_best table for all benchmarked instances."""
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO competition_best
+            (instance_hash, best_solver, best_time_s, competition, timeout_s)
+        SELECT
+            cr.instance_hash,
+            cr.solver,
+            MIN(cr.time_s),
+            cr.competition,
+            5000
+        FROM competition_results cr
+        WHERE cr.status IN ('SAT', 'SATISFIABLE')
+          AND cr.instance_hash IN (SELECT DISTINCT instance_hash FROM results)
+        GROUP BY cr.instance_hash
+    """)
+    updated = cursor.rowcount
+    if updated > 0:
+        print(f"  Updated {updated} rows in competition_best")
+
+
 def record_to_db(results, solver_name, run_metadata):
     """Record benchmark results to benchmarks.db for the given solver."""
     if not BENCHMARKS_DB.exists():
@@ -444,12 +532,24 @@ def record_to_db(results, solver_name, run_metadata):
 
     run_id = run_metadata["run_id"]
 
+    # Build legacy tag from structured fields if not provided
+    tag = results.get("tag", "")
+    if not tag and run_metadata.get("tag_instance_set"):
+        parts = [run_metadata["solver_version"]]
+        if run_metadata.get("tag_instance_set"):
+            parts.append(run_metadata["tag_instance_set"])
+        if run_metadata.get("tag_config") and run_metadata["tag_config"] != "default":
+            parts.append(run_metadata["tag_config"])
+        tag = "-".join(parts)
+
     # Insert run metadata
     cursor.execute("""
         INSERT OR REPLACE INTO runs
         (run_id, solver_version, git_commit, git_dirty, integration_method,
-         strategy, timestamp, timeout_s, hardware, rust_version, tag, notes)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         strategy, timestamp, timeout_s, hardware, rust_version, tag, notes,
+         restart_strategy, preprocessing, cli_command,
+         tag_purpose, tag_instance_set, tag_config)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         run_id,
         run_metadata["solver_version"],
@@ -461,8 +561,14 @@ def record_to_db(results, solver_name, run_metadata):
         results["timeout_s"],
         run_metadata["hardware"],
         run_metadata.get("rust_version"),
-        results.get("tag", ""),
+        tag,
         run_metadata.get("notes"),
+        run_metadata.get("restart_strategy"),
+        run_metadata.get("preprocessing"),
+        run_metadata.get("cli_command"),
+        run_metadata.get("tag_purpose"),
+        run_metadata.get("tag_instance_set"),
+        run_metadata.get("tag_config"),
     ))
 
     # Insert per-instance results
@@ -486,8 +592,9 @@ def record_to_db(results, solver_name, run_metadata):
             INSERT OR REPLACE INTO results
             (run_id, instance_hash, status, time_s, steps, restarts,
              verified, seed, zeta, alpha, beta, gamma, delta, epsilon,
-             dt_min, dt_max)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             dt_min, dt_max, peak_xl_max, final_dt, wall_clock_s, cpu_time_s,
+             num_vars, num_clauses)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             run_id,
             instance_hash,
@@ -505,8 +612,17 @@ def record_to_db(results, solver_name, run_metadata):
             None,  # epsilon
             None,  # dt_min
             None,  # dt_max
+            r.get("peak_xl_max"),
+            r.get("final_dt"),
+            r.get("wall_clock_s"),
+            r.get("cpu_time_s"),
+            r.get("num_vars"),
+            r.get("num_clauses"),
         ))
         recorded += 1
+
+    # Update competition_best for newly benchmarked instances
+    update_competition_best(conn)
 
     conn.commit()
     conn.close()
@@ -668,6 +784,17 @@ def main():
                         help="Notes for this recorded run")
     parser.add_argument("--force", action="store_true",
                         help="Record even with uncommitted changes (skip prompt)")
+
+    # Structured tagging
+    tag_group = parser.add_argument_group("structured tags (for --record)")
+    tag_group.add_argument("--purpose",
+                           choices=["paper-verification", "competition-benchmark",
+                                    "regression-test", "development"],
+                           help="Purpose of this benchmark run")
+    tag_group.add_argument("--instance-set",
+                           help="Instance set name (e.g., barthel, komb, anni2022)")
+    tag_group.add_argument("--config",
+                           help="Run config label (e.g., default, cycling, no-preprocess)")
     parser.add_argument("--list-suites", action="store_true",
                         help="List available benchmark suites")
 
@@ -805,6 +932,9 @@ def main():
                 print("\nAborting (non-interactive). Use --force to skip this check.")
                 return
 
+        # Reconstruct the CLI command for reproducibility
+        cli_command = " ".join(sys.argv)
+
         run_metadata = {
             "run_id": datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S") + f"_{uuid.uuid4().hex[:6]}",
             "solver_version": solver_version,
@@ -814,6 +944,10 @@ def main():
             "rust_version": detect_rust_version(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "notes": args.notes,
+            "cli_command": cli_command,
+            "tag_purpose": getattr(args, "purpose", None),
+            "tag_instance_set": getattr(args, "instance_set", None),
+            "tag_config": getattr(args, "config", None),
         }
 
         print("=" * 70)
@@ -844,12 +978,16 @@ def main():
 
     # Record to DB (if --record)
     if args.record and run_metadata:
-        # Update strategy from first result's stderr parse
+        # Update strategy/method/restart/preprocessing from first result's stderr parse
         for inst in results["instances"]:
             r = inst.get("spinsat", {})
             if r.get("strategy"):
                 run_metadata["strategy"] = r["strategy"]
                 run_metadata["integration_method"] = r.get("method_used")
+                if r.get("restart_strategy"):
+                    run_metadata["restart_strategy"] = r["restart_strategy"]
+                if r.get("preprocessing"):
+                    run_metadata["preprocessing"] = r["preprocessing"]
                 break
 
         recorded = record_to_db(results, "spinsat", run_metadata)
