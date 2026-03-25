@@ -476,9 +476,33 @@ ORDER BY ru.timestamp;</textarea>
             });
         }
 
+        // --------------- Schema Detection ---------------
+        // Detect whether new columns/tables exist (DB may be pre-migration)
+        let hasNewCols = false;
+        let hasCompBest = false;
+        let hasYearTrack = false;
+        function detectSchema() {
+            const r = query("SELECT sql FROM sqlite_master WHERE type='table' AND name='runs'");
+            if (r.values.length && r.values[0][0]) {
+                hasNewCols = r.values[0][0].includes('tag_instance_set');
+            }
+            const tables = query("SELECT name FROM sqlite_master WHERE type='table'");
+            const tableNames = tables.values.map(r => r[0]);
+            hasCompBest = tableNames.includes('competition_best');
+            hasYearTrack = tableNames.includes('instance_year_track');
+        }
+
+        function tagExpr() {
+            return hasNewCols ? "COALESCE(ru.tag_instance_set, ru.tag)" : "ru.tag";
+        }
+        function colOrNull(table, col) {
+            return hasNewCols ? `${table}.${col}` : "NULL";
+        }
+
         // --------------- Dashboard ---------------
 
         function renderDashboard() {
+            detectSchema();
             renderStats();
             renderRunsTable();
             renderPar2Chart();
@@ -493,7 +517,9 @@ ORDER BY ru.timestamp;</textarea>
             const solved = query("SELECT COUNT(*) FROM results WHERE status = 'SATISFIABLE'");
             const uniqueInstances = query("SELECT COUNT(DISTINCT instance_hash) FROM results");
             const versions = query("SELECT COUNT(DISTINCT solver_version) FROM runs");
-            const compBest = query("SELECT COUNT(*) FROM competition_best");
+            const compBest = hasCompBest
+                ? query("SELECT COUNT(*) FROM competition_best")
+                : query("SELECT COUNT(DISTINCT instance_hash) FROM competition_results WHERE status IN ('SAT','SATISFIABLE')");
 
             const stats = [
                 { value: runs.values[0]?.[0] || 0, label: 'Runs' },
@@ -518,9 +544,9 @@ ORDER BY ru.timestamp;</textarea>
                     ru.run_id,
                     ru.solver_version as Version,
                     substr(ru.git_commit, 1, 7) as "Commit",
-                    COALESCE(ru.tag_instance_set, ru.tag) as Tag,
+                    ${tagExpr()} as Tag,
                     ru.integration_method as Method,
-                    ru.restart_strategy as Restart,
+                    ${colOrNull('ru','restart_strategy')} as Restart,
                     COUNT(*) as Instances,
                     SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as Solved,
                     SUM(CASE WHEN r.status = 'TIMEOUT' THEN 1 ELSE 0 END) as Timeouts,
@@ -553,13 +579,16 @@ ORDER BY ru.timestamp;</textarea>
         }
 
         function showRunDrill(runId) {
-            const meta = query(`
-                SELECT solver_version, git_commit, tag, integration_method,
-                       restart_strategy, preprocessing, timeout_s, hardware,
-                       rust_version, cli_command, tag_purpose, tag_instance_set, tag_config,
-                       timestamp
-                FROM runs WHERE run_id = '${runId}'
-            `);
+            const metaCols = hasNewCols
+                ? `solver_version, git_commit, tag, integration_method,
+                   restart_strategy, preprocessing, timeout_s, hardware,
+                   rust_version, cli_command, tag_purpose, tag_instance_set, tag_config,
+                   timestamp`
+                : `solver_version, git_commit, tag, integration_method,
+                   NULL, NULL, timeout_s, hardware,
+                   rust_version, NULL, NULL, NULL, NULL,
+                   timestamp`;
+            const meta = query(`SELECT ${metaCols} FROM runs WHERE run_id = '${runId}'`);
             if (!meta.values.length) return;
             const m = meta.values[0];
 
@@ -589,9 +618,8 @@ ORDER BY ru.timestamp;</textarea>
                 cliEl.style.display = 'none';
             }
 
-            const results = query(`
-                SELECT
-                    COALESCE(if2.value, substr(r.instance_hash, 1, 12) || '...') as Instance,
+            const drillCols = hasNewCols
+                ? `COALESCE(if2.value, substr(r.instance_hash, 1, 12) || '...') as Instance,
                     r.status as Status,
                     ROUND(r.time_s, 4) as "Time (s)",
                     r.restarts as Restarts,
@@ -600,7 +628,15 @@ ORDER BY ru.timestamp;</textarea>
                     r.num_vars as Vars,
                     r.num_clauses as Clauses,
                     ROUND(r.peak_xl_max, 2) as "Peak XL",
-                    r.final_dt as "Final dt"
+                    r.final_dt as "Final dt"`
+                : `COALESCE(if2.value, substr(r.instance_hash, 1, 12) || '...') as Instance,
+                    r.status as Status,
+                    ROUND(r.time_s, 4) as "Time (s)",
+                    r.restarts as Restarts,
+                    r.seed as Seed,
+                    r.zeta as Zeta`;
+            const results = query(`
+                SELECT ${drillCols}
                 FROM results r
                 LEFT JOIN instance_files if2 ON r.instance_hash = if2.hash
                 WHERE r.run_id = '${runId}'
@@ -623,7 +659,7 @@ ORDER BY ru.timestamp;</textarea>
         function renderPar2Chart() {
             const data = query(`
                 SELECT
-                    ru.solver_version || ' ' || COALESCE(ru.tag_instance_set, ru.tag, '') ||
+                    ru.solver_version || ' ' || COALESCE(${hasNewCols ? 'ru.tag_instance_set' : 'NULL'}, ru.tag, '') ||
                     ' (PAR-2 @ ' || ru.timeout_s || 's)' as label,
                     SUM(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s ELSE 2.0 * ru.timeout_s END) as par2
                 FROM results r
@@ -703,9 +739,9 @@ ORDER BY ru.timestamp;</textarea>
             renderTable('table-versions', query(`
                 SELECT
                     ru.solver_version as Version,
-                    COALESCE(ru.tag_instance_set, ru.tag) as Tag,
+                    ${tagExpr()} as Tag,
                     ru.integration_method as Method,
-                    ru.restart_strategy as Restart,
+                    ${colOrNull('ru','restart_strategy')} as Restart,
                     COUNT(*) as Instances,
                     SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as Solved,
                     ROUND(MIN(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as "Best",
@@ -724,9 +760,20 @@ ORDER BY ru.timestamp;</textarea>
         // --------------- Explorer Tab ---------------
 
         function initExplorer() {
+            if (!hasYearTrack && !hasCompBest) {
+                document.getElementById('explorer-stats').innerHTML =
+                    '<span class="es-item" style="color:var(--yellow)">Explorer requires migrated DB. Run: python3 scripts/migrate_benchmarks_db.py</span>';
+                document.getElementById('table-explorer').innerHTML = '';
+                return;
+            }
+
             // Populate filter dropdowns
-            const years = query(`SELECT DISTINCT year FROM instance_year_track WHERE year IS NOT NULL ORDER BY year`);
-            const tracks = query(`SELECT DISTINCT track_type FROM instance_year_track WHERE track_type IS NOT NULL ORDER BY track_type`);
+            const years = hasYearTrack
+                ? query(`SELECT DISTINCT year FROM instance_year_track WHERE year IS NOT NULL ORDER BY year`)
+                : { values: [] };
+            const tracks = hasYearTrack
+                ? query(`SELECT DISTINCT track_type FROM instance_year_track WHERE track_type IS NOT NULL ORDER BY track_type`)
+                : { values: [] };
             const families = query(`
                 SELECT DISTINCT i.family FROM instances i
                 JOIN results r ON i.hash = r.instance_hash
@@ -755,6 +802,8 @@ ORDER BY ru.timestamp;</textarea>
         }
 
         function renderExplorer() {
+            if (!hasYearTrack && !hasCompBest) return;
+
             const year = document.getElementById('filter-year').value;
             const track = document.getElementById('filter-track').value;
             const family = document.getElementById('filter-family').value;
@@ -762,8 +811,8 @@ ORDER BY ru.timestamp;</textarea>
 
             // Build WHERE clauses for instance filtering
             const whereParts = [];
-            if (year) whereParts.push(`iyt.year = ${parseInt(year)}`);
-            if (track) whereParts.push(`iyt.track_type = '${track}'`);
+            if (year && hasYearTrack) whereParts.push(`iyt.year = ${parseInt(year)}`);
+            if (track && hasYearTrack) whereParts.push(`iyt.track_type = '${track}'`);
             if (family) whereParts.push(`i.family = '${family}'`);
 
             const instanceWhere = whereParts.length ? 'WHERE ' + whereParts.join(' AND ') : '';
@@ -787,15 +836,39 @@ ORDER BY ru.timestamp;</textarea>
                 : query(`SELECT MAX(timeout_s) FROM runs`);
             const timeout = timeoutQ.values[0]?.[0] || 300;
 
+            // Vars/clauses columns — use new results cols if available, else instance_features
+            const varsExpr = hasNewCols
+                ? `COALESCE(r_detail.num_vars, feat.num_vars, '')`
+                : `COALESCE(feat.num_vars, '')`;
+            const clausesExpr = hasNewCols
+                ? `COALESCE(r_detail.num_clauses, feat.num_clauses, '')`
+                : `COALESCE(feat.num_clauses, '')`;
+
+            // Competition join — use competition_best if available, else competition_results
+            const compJoin = hasCompBest
+                ? `LEFT JOIN competition_best cb ON bt.instance_hash = cb.instance_hash`
+                : `LEFT JOIN (
+                    SELECT instance_hash, solver as best_solver, MIN(time_s) as best_time_s
+                    FROM competition_results WHERE status IN ('SAT','SATISFIABLE')
+                    GROUP BY instance_hash
+                   ) cb ON bt.instance_hash = cb.instance_hash`;
+
+            // Year/track join
+            const ytJoin = hasYearTrack
+                ? `LEFT JOIN instance_year_track iyt ON bt.instance_hash = iyt.hash`
+                : ``;
+            const ytCols = hasYearTrack
+                ? `COALESCE(iyt.year, '') as Year, COALESCE(iyt.track_type, '') as Track,`
+                : `'' as Year, '' as Track,`;
+
             // Head-to-head query
             const sql = `
                 SELECT
                     COALESCE(if2.value, substr(bt.instance_hash, 1, 16)) as Instance,
                     COALESCE(i.family, '') as Family,
-                    COALESCE(iyt.year, '') as Year,
-                    COALESCE(iyt.track_type, '') as Track,
-                    COALESCE(r_detail.num_vars, feat.num_vars, '') as Vars,
-                    COALESCE(r_detail.num_clauses, feat.num_clauses, '') as Clauses,
+                    ${ytCols}
+                    ${varsExpr} as Vars,
+                    ${clausesExpr} as Clauses,
                     ${spinStatusExpr} as "SpinSAT Status",
                     ROUND(${spinTimeExpr}, 4) as "SpinSAT Time",
                     ${spinVersionExpr} as "SpinSAT Ver",
@@ -808,11 +881,11 @@ ORDER BY ru.timestamp;</textarea>
                         ELSE ROUND(${spinTimeExpr} / cb.best_time_s, 1)
                     END as Ratio
                 FROM best_times bt
-                LEFT JOIN competition_best cb ON bt.instance_hash = cb.instance_hash
+                ${compJoin}
                 LEFT JOIN instance_files if2 ON bt.instance_hash = if2.hash
                 LEFT JOIN instances i ON bt.instance_hash = i.hash
                 LEFT JOIN instance_features feat ON bt.instance_hash = feat.instance_hash
-                LEFT JOIN instance_year_track iyt ON bt.instance_hash = iyt.hash
+                ${ytJoin}
                 LEFT JOIN results r_detail ON bt.instance_hash = r_detail.instance_hash
                     AND r_detail.run_id = bt.run_id
                 ${instanceWhere}
