@@ -17,6 +17,7 @@
             --green: #3fb950;
             --red: #f85149;
             --yellow: #d29922;
+            --orange: #f0883e;
         }
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -25,7 +26,7 @@
             color: var(--text);
             line-height: 1.5;
         }
-        .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
         header {
             border-bottom: 1px solid var(--border);
             padding-bottom: 16px;
@@ -71,10 +72,23 @@
             text-align: left;
             border-bottom: 1px solid var(--border);
         }
-        th { color: var(--text-muted); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+        th {
+            color: var(--text-muted);
+            font-weight: 600;
+            font-size: 12px;
+            text-transform: uppercase;
+            cursor: pointer;
+            user-select: none;
+        }
+        th:hover { color: var(--text); }
+        th .sort-arrow { font-size: 10px; margin-left: 4px; }
         .sat { color: var(--green); }
         .timeout { color: var(--red); }
         .unknown { color: var(--yellow); }
+        .ratio-good { color: var(--green); }
+        .ratio-ok { color: var(--yellow); }
+        .ratio-bad { color: var(--red); }
+        .ratio-timeout { color: var(--text-muted); }
         canvas { max-height: 300px; }
         #loading {
             text-align: center;
@@ -139,6 +153,7 @@
             margin-top: 8px;
         }
         .btn:hover { opacity: 0.9; }
+        .btn-sm { padding: 4px 10px; font-size: 12px; margin: 0; }
         #query-results { margin-top: 12px; overflow-x: auto; }
         footer {
             text-align: center;
@@ -149,6 +164,84 @@
             margin-top: 24px;
         }
         footer a { color: var(--accent); text-decoration: none; }
+        /* Filter bar */
+        .filter-bar {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .filter-bar label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+        .filter-bar select {
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 13px;
+        }
+        .filter-group { display: flex; flex-direction: column; gap: 4px; }
+        .explorer-stats {
+            display: flex;
+            gap: 16px;
+            padding: 12px 16px;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            flex-wrap: wrap;
+        }
+        .explorer-stats .es-item { color: var(--text-muted); }
+        .explorer-stats .es-value { color: var(--text); font-weight: 600; }
+        /* Drill-down */
+        .drill-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.7);
+            z-index: 100;
+            overflow-y: auto;
+            padding: 40px 24px;
+        }
+        .drill-overlay.active { display: block; }
+        .drill-panel {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 24px;
+        }
+        .drill-panel h2 { margin-bottom: 8px; }
+        .drill-meta { color: var(--text-muted); font-size: 13px; margin-bottom: 16px; }
+        .drill-close {
+            float: right;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 20px;
+            cursor: pointer;
+        }
+        .drill-close:hover { color: var(--text); }
+        .cli-cmd {
+            font-family: 'SFMono-Regular', Consolas, monospace;
+            font-size: 12px;
+            background: var(--bg);
+            padding: 8px 12px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+            margin-top: 8px;
+            word-break: break-all;
+        }
+        tr.clickable { cursor: pointer; }
+        tr.clickable:hover { background: rgba(88, 166, 255, 0.05); }
+        .table-scroll { overflow-x: auto; }
     </style>
 </head>
 <body>
@@ -178,66 +271,97 @@
 
             <div class="tab-bar">
                 <div class="tab active" data-tab="overview">Overview</div>
+                <div class="tab" data-tab="explorer">Explorer</div>
                 <div class="tab" data-tab="versions">Version Comparison</div>
-                <div class="tab" data-tab="competition">vs Competition</div>
                 <div class="tab" data-tab="query">SQL Explorer</div>
             </div>
 
+            <!-- Overview Tab -->
             <div id="tab-overview" class="tab-content active">
                 <div class="grid">
                     <div class="card">
-                        <h2>PAR-2 by Version</h2>
+                        <h2>PAR-2 by Run</h2>
                         <canvas id="chart-par2"></canvas>
                     </div>
                     <div class="card">
-                        <h2>Solve Rate by Instance Size</h2>
+                        <h2>Solve Time Distribution (Latest Run)</h2>
                         <canvas id="chart-size"></canvas>
                     </div>
                     <div class="card full-width">
-                        <h2>Recent Runs</h2>
-                        <div id="table-runs"></div>
+                        <h2>All Runs <span style="font-size:12px;color:var(--text-muted)">(click row for details)</span></h2>
+                        <div class="table-scroll" id="table-runs"></div>
                     </div>
                 </div>
             </div>
 
+            <!-- Explorer Tab -->
+            <div id="tab-explorer" class="tab-content">
+                <div class="card full-width">
+                    <h2>Head-to-Head: SpinSAT vs Competition</h2>
+                    <div class="filter-bar">
+                        <div class="filter-group">
+                            <label>Year</label>
+                            <select id="filter-year"><option value="">All</option></select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Track</label>
+                            <select id="filter-track"><option value="">All</option></select>
+                        </div>
+                        <div class="filter-group">
+                            <label>Family</label>
+                            <select id="filter-family"><option value="">All</option></select>
+                        </div>
+                        <div class="filter-group">
+                            <label>SpinSAT Run</label>
+                            <select id="filter-run"><option value="">Best across all</option></select>
+                        </div>
+                    </div>
+                    <div id="explorer-stats" class="explorer-stats"></div>
+                    <div class="table-scroll" id="table-explorer"></div>
+                </div>
+            </div>
+
+            <!-- Version Comparison Tab -->
             <div id="tab-versions" class="tab-content">
                 <div class="grid">
                     <div class="card full-width">
                         <h2>Best Times by Version</h2>
-                        <div id="table-versions"></div>
+                        <div class="table-scroll" id="table-versions"></div>
                     </div>
                 </div>
             </div>
 
-            <div id="tab-competition" class="tab-content">
-                <div class="grid">
-                    <div class="card">
-                        <h2>SpinSAT vs Competition (PAR-2)</h2>
-                        <canvas id="chart-competition"></canvas>
-                    </div>
-                    <div class="card">
-                        <h2>Solver Comparison</h2>
-                        <div id="table-competition"></div>
-                    </div>
-                </div>
-            </div>
-
+            <!-- SQL Explorer Tab -->
             <div id="tab-query" class="tab-content">
                 <div class="card">
                     <h2>SQL Explorer</h2>
                     <textarea class="query-box" id="sql-input">SELECT
     ru.solver_version,
+    ru.tag,
     COUNT(*) as total,
     SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as solved,
     ROUND(AVG(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 3) as avg_time,
-    MAX(r.time_s) as max_time
+    ru.timeout_s,
+    ROUND(SUM(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s
+        ELSE 2.0 * ru.timeout_s END), 1) as "PAR-2"
 FROM results r
 JOIN runs ru USING(run_id)
-GROUP BY ru.solver_version
-ORDER BY ru.solver_version;</textarea>
+GROUP BY ru.run_id
+ORDER BY ru.timestamp;</textarea>
                     <button class="btn" onclick="runQuery()">Run Query</button>
                     <div id="query-results"></div>
                 </div>
+            </div>
+        </div>
+
+        <!-- Drill-down overlay -->
+        <div id="drill-overlay" class="drill-overlay">
+            <div class="drill-panel">
+                <button class="drill-close" onclick="closeDrill()">&times;</button>
+                <h2 id="drill-title"></h2>
+                <div id="drill-meta" class="drill-meta"></div>
+                <div id="drill-cli" class="cli-cmd" style="display:none"></div>
+                <div class="table-scroll" id="drill-table" style="margin-top:16px"></div>
             </div>
         </div>
 
@@ -251,36 +375,26 @@ ORDER BY ru.solver_version;</textarea>
     </div>
 
     <script>
-        // Configuration
         const REPO = 'seanbearden/SpinSAT';
         const DB_FILENAME = 'benchmarks.db';
-
         let db = null;
 
-        // DB is served from the same GitHub Pages origin (docs/dashboard/benchmarks.db)
-        // To update: copy benchmarks.db into docs/dashboard/ and push
-        function getDbUrl() {
-            return DB_FILENAME;
-        }
+        function getDbUrl() { return DB_FILENAME; }
 
         async function initDb() {
             const SQL = await initSqlJs({
                 locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/${file}`
             });
-
-            const dbUrl = await getDbUrl();
+            const dbUrl = getDbUrl();
             try {
                 const resp = await fetch(dbUrl);
                 if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
                 const buf = await resp.arrayBuffer();
                 db = new SQL.Database(new Uint8Array(buf));
-
-                // Update Datasette links
                 const datasetteUrl = `https://lite.datasette.io/?url=${encodeURIComponent(dbUrl)}`;
                 document.querySelectorAll('#datasette-link, #footer-datasette').forEach(el => {
                     el.href = datasetteUrl;
                 });
-
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('dashboard').style.display = 'block';
                 renderDashboard();
@@ -301,29 +415,68 @@ ORDER BY ru.solver_version;</textarea>
             }
         }
 
-        function renderTable(containerId, result) {
+        function esc(v) {
+            if (v === null || v === undefined) return '&mdash;';
+            return String(v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        }
+
+        function fmt(v) {
+            if (v === null || v === undefined) return '&mdash;';
+            if (typeof v === 'number') return Number.isInteger(v) ? v.toLocaleString() : v.toFixed(4);
+            return esc(v);
+        }
+
+        function renderTable(containerId, result, opts = {}) {
+            const el = document.getElementById(containerId);
             if (!result.values.length) {
-                document.getElementById(containerId).innerHTML = '<p style="color: var(--text-muted)">No data</p>';
+                el.innerHTML = '<p style="color: var(--text-muted)">No data</p>';
                 return;
             }
+            const { onRowClick, rowClass } = opts;
             let html = '<table><thead><tr>';
-            result.columns.forEach(c => html += `<th>${c}</th>`);
+            result.columns.forEach((c, ci) => {
+                html += `<th data-col="${ci}">${esc(c)} <span class="sort-arrow"></span></th>`;
+            });
             html += '</tr></thead><tbody>';
-            result.values.forEach(row => {
-                html += '<tr>';
+            result.values.forEach((row, ri) => {
+                const cls = rowClass ? rowClass(row, ri) : '';
+                const click = onRowClick ? ` onclick="window._drillRow(${ri})"` : '';
+                html += `<tr class="${cls}"${click}>`;
                 row.forEach((v, i) => {
                     let cls = '';
                     if (v === 'SATISFIABLE' || v === 'SAT') cls = 'sat';
                     else if (v === 'TIMEOUT') cls = 'timeout';
                     else if (v === 'UNKNOWN') cls = 'unknown';
-                    const display = v === null ? '—' : typeof v === 'number' ? (Number.isInteger(v) ? v : v.toFixed(4)) : v;
-                    html += `<td class="${cls}">${display}</td>`;
+                    html += `<td class="${cls}">${fmt(v)}</td>`;
                 });
                 html += '</tr>';
             });
             html += '</tbody></table>';
-            document.getElementById(containerId).innerHTML = html;
+            el.innerHTML = html;
+
+            // Sortable headers
+            el.querySelectorAll('th').forEach(th => {
+                th.addEventListener('click', () => {
+                    const ci = parseInt(th.dataset.col);
+                    const tbody = el.querySelector('tbody');
+                    const rows = Array.from(tbody.querySelectorAll('tr'));
+                    const asc = th.dataset.sort !== 'asc';
+                    el.querySelectorAll('th').forEach(h => { h.dataset.sort = ''; h.querySelector('.sort-arrow').textContent = ''; });
+                    th.dataset.sort = asc ? 'asc' : 'desc';
+                    th.querySelector('.sort-arrow').textContent = asc ? ' \u25B2' : ' \u25BC';
+                    rows.sort((a, b) => {
+                        const av = a.children[ci].textContent.replace(/,/g, '');
+                        const bv = b.children[ci].textContent.replace(/,/g, '');
+                        const an = parseFloat(av), bn = parseFloat(bv);
+                        if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+                        return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+                    });
+                    rows.forEach(r => tbody.appendChild(r));
+                });
+            });
         }
+
+        // --------------- Dashboard ---------------
 
         function renderDashboard() {
             renderStats();
@@ -331,25 +484,24 @@ ORDER BY ru.solver_version;</textarea>
             renderPar2Chart();
             renderSizeChart();
             renderVersionTable();
-            renderCompetitionChart();
-            renderCompetitionTable();
+            initExplorer();
         }
 
         function renderStats() {
             const runs = query("SELECT COUNT(*) FROM runs");
             const results = query("SELECT COUNT(*) FROM results");
             const solved = query("SELECT COUNT(*) FROM results WHERE status = 'SATISFIABLE'");
-            const instances = query("SELECT COUNT(*) FROM instances");
+            const uniqueInstances = query("SELECT COUNT(DISTINCT instance_hash) FROM results");
             const versions = query("SELECT COUNT(DISTINCT solver_version) FROM runs");
-            const competition = query("SELECT COUNT(*) FROM competition_results");
+            const compBest = query("SELECT COUNT(*) FROM competition_best");
 
             const stats = [
                 { value: runs.values[0]?.[0] || 0, label: 'Runs' },
                 { value: results.values[0]?.[0] || 0, label: 'Results' },
                 { value: solved.values[0]?.[0] || 0, label: 'Solved' },
-                { value: instances.values[0]?.[0] || 0, label: 'Instances' },
+                { value: uniqueInstances.values[0]?.[0] || 0, label: 'Unique Instances' },
                 { value: versions.values[0]?.[0] || 0, label: 'Versions' },
-                { value: competition.values[0]?.[0] || 0, label: 'Competition Ref' },
+                { value: compBest.values[0]?.[0] || 0, label: 'Comp. Reference' },
             ];
 
             document.getElementById('stats-bar').innerHTML = stats.map(s =>
@@ -357,37 +509,128 @@ ORDER BY ru.solver_version;</textarea>
             ).join('');
         }
 
+        // --------------- Runs Table (Enhanced) ---------------
+
+        let _runsData = null;
         function renderRunsTable() {
-            renderTable('table-runs', query(`
+            _runsData = query(`
                 SELECT
+                    ru.run_id,
                     ru.solver_version as Version,
-                    ru.git_commit as "Commit",
-                    ru.tag as Tag,
+                    substr(ru.git_commit, 1, 7) as "Commit",
+                    COALESCE(ru.tag_instance_set, ru.tag) as Tag,
+                    ru.integration_method as Method,
+                    ru.restart_strategy as Restart,
                     COUNT(*) as Instances,
                     SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as Solved,
                     SUM(CASE WHEN r.status = 'TIMEOUT' THEN 1 ELSE 0 END) as Timeouts,
-                    ROUND(AVG(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 3) as 'Avg Time',
-                    ru.hardware as Hardware,
+                    ROUND(AVG(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 3) as "Avg Time",
+                    ru.timeout_s as Timeout,
+                    ROUND(SUM(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s
+                        ELSE 2.0 * ru.timeout_s END), 1) as "PAR-2",
                     substr(ru.timestamp, 1, 10) as Date
                 FROM results r
                 JOIN runs ru USING(run_id)
                 GROUP BY ru.run_id
                 ORDER BY ru.timestamp DESC
-                LIMIT 20
-            `));
+            `);
+
+            // Hide run_id column from display but keep data for drill-down
+            const displayData = {
+                columns: _runsData.columns.slice(1), // skip run_id
+                values: _runsData.values.map(r => r.slice(1)),
+            };
+
+            window._drillRow = (ri) => {
+                const runId = _runsData.values[ri][0];
+                showRunDrill(runId);
+            };
+
+            renderTable('table-runs', displayData, {
+                rowClass: () => 'clickable',
+                onRowClick: true,
+            });
         }
+
+        function showRunDrill(runId) {
+            const meta = query(`
+                SELECT solver_version, git_commit, tag, integration_method,
+                       restart_strategy, preprocessing, timeout_s, hardware,
+                       rust_version, cli_command, tag_purpose, tag_instance_set, tag_config,
+                       timestamp
+                FROM runs WHERE run_id = '${runId}'
+            `);
+            if (!meta.values.length) return;
+            const m = meta.values[0];
+
+            document.getElementById('drill-title').textContent =
+                `Run: ${m[0]} (${m[1] ? m[1].substring(0,7) : '?'}) — ${m[2] || 'untagged'}`;
+
+            const metaParts = [
+                `Date: ${m[13]}`,
+                `Method: ${m[3] || '?'}`,
+                `Restart: ${m[4] || '?'}`,
+                `Preprocessing: ${m[5] || '?'}`,
+                `Timeout: ${m[6]}s`,
+                `Hardware: ${m[7] || '?'}`,
+                `Rust: ${m[8] || '?'}`,
+            ];
+            if (m[10]) metaParts.push(`Purpose: ${m[10]}`);
+            if (m[11]) metaParts.push(`Instance set: ${m[11]}`);
+            if (m[12]) metaParts.push(`Config: ${m[12]}`);
+
+            document.getElementById('drill-meta').innerHTML = metaParts.join(' &middot; ');
+
+            const cliEl = document.getElementById('drill-cli');
+            if (m[9]) {
+                cliEl.textContent = m[9];
+                cliEl.style.display = 'block';
+            } else {
+                cliEl.style.display = 'none';
+            }
+
+            const results = query(`
+                SELECT
+                    COALESCE(if2.value, substr(r.instance_hash, 1, 12) || '...') as Instance,
+                    r.status as Status,
+                    ROUND(r.time_s, 4) as "Time (s)",
+                    r.restarts as Restarts,
+                    r.seed as Seed,
+                    r.zeta as Zeta,
+                    r.num_vars as Vars,
+                    r.num_clauses as Clauses,
+                    ROUND(r.peak_xl_max, 2) as "Peak XL",
+                    r.final_dt as "Final dt"
+                FROM results r
+                LEFT JOIN instance_files if2 ON r.instance_hash = if2.hash
+                WHERE r.run_id = '${runId}'
+                ORDER BY r.status, r.time_s
+            `);
+
+            renderTable('drill-table', results);
+            document.getElementById('drill-overlay').classList.add('active');
+        }
+
+        function closeDrill() {
+            document.getElementById('drill-overlay').classList.remove('active');
+        }
+        document.getElementById('drill-overlay').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) closeDrill();
+        });
+
+        // --------------- PAR-2 Chart (with timeout context) ---------------
 
         function renderPar2Chart() {
             const data = query(`
                 SELECT
-                    ru.solver_version || ' (' || ru.tag || ')' as label,
+                    ru.solver_version || ' ' || COALESCE(ru.tag_instance_set, ru.tag, '') ||
+                    ' (PAR-2 @ ' || ru.timeout_s || 's)' as label,
                     SUM(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s ELSE 2.0 * ru.timeout_s END) as par2
                 FROM results r
                 JOIN runs ru USING(run_id)
                 GROUP BY ru.run_id
                 ORDER BY ru.timestamp
             `);
-
             if (!data.values.length) return;
 
             new Chart(document.getElementById('chart-par2'), {
@@ -413,23 +656,9 @@ ORDER BY ru.solver_version;</textarea>
             });
         }
 
-        function renderSizeChart() {
-            const data = query(`
-                SELECT
-                    CASE
-                        WHEN i.isohash = 'empty' THEN 'unknown'
-                        ELSE 'known'
-                    END as category,
-                    COUNT(*) as total,
-                    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as solved
-                FROM results r
-                LEFT JOIN instances i ON r.instance_hash = i.hash
-                JOIN runs ru USING(run_id)
-                WHERE ru.run_id = (SELECT run_id FROM runs ORDER BY timestamp DESC LIMIT 1)
-                GROUP BY category
-            `);
+        // --------------- Solve Time Distribution ---------------
 
-            // Fallback: group by solve time buckets
+        function renderSizeChart() {
             const sizeData = query(`
                 SELECT
                     CASE
@@ -437,7 +666,8 @@ ORDER BY ru.solver_version;</textarea>
                         WHEN r.time_s < 0.1 THEN '0.01-0.1s'
                         WHEN r.time_s < 1 THEN '0.1-1s'
                         WHEN r.time_s < 10 THEN '1-10s'
-                        ELSE '> 10s'
+                        WHEN r.time_s < 100 THEN '10-100s'
+                        ELSE '> 100s'
                     END as bucket,
                     COUNT(*) as count
                 FROM results r
@@ -447,7 +677,6 @@ ORDER BY ru.solver_version;</textarea>
                 GROUP BY bucket
                 ORDER BY MIN(r.time_s)
             `);
-
             if (!sizeData.values.length) return;
 
             new Chart(document.getElementById('chart-size'), {
@@ -456,7 +685,7 @@ ORDER BY ru.solver_version;</textarea>
                     labels: sizeData.values.map(r => r[0]),
                     datasets: [{
                         data: sizeData.values.map(r => r[1]),
-                        backgroundColor: ['#3fb950', '#58a6ff', '#d29922', '#f0883e', '#f85149'],
+                        backgroundColor: ['#3fb950', '#58a6ff', '#d29922', '#f0883e', '#f85149', '#8b949e'],
                     }]
                 },
                 options: {
@@ -468,18 +697,23 @@ ORDER BY ru.solver_version;</textarea>
             });
         }
 
+        // --------------- Version Comparison ---------------
+
         function renderVersionTable() {
             renderTable('table-versions', query(`
                 SELECT
                     ru.solver_version as Version,
-                    ru.tag as Tag,
+                    COALESCE(ru.tag_instance_set, ru.tag) as Tag,
+                    ru.integration_method as Method,
+                    ru.restart_strategy as Restart,
                     COUNT(*) as Instances,
                     SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as Solved,
-                    ROUND(MIN(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as 'Best Time',
-                    ROUND(AVG(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as 'Avg Time',
-                    ROUND(MAX(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as 'Max Time',
-                    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s
-                        ELSE 2.0 * ru.timeout_s END) as 'PAR-2'
+                    ROUND(MIN(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as "Best",
+                    ROUND(AVG(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as "Avg",
+                    ROUND(MAX(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s END), 4) as "Max",
+                    ru.timeout_s as "T/O",
+                    ROUND(SUM(CASE WHEN r.status = 'SATISFIABLE' THEN r.time_s
+                        ELSE 2.0 * ru.timeout_s END), 1) as "PAR-2"
                 FROM results r
                 JOIN runs ru USING(run_id)
                 GROUP BY ru.run_id
@@ -487,68 +721,153 @@ ORDER BY ru.solver_version;</textarea>
             `));
         }
 
-        function renderCompetitionChart() {
-            const data = query(`
-                SELECT solver, COUNT(*) as solved
-                FROM competition_results
-                WHERE status IN ('SAT', 'SATISFIABLE')
-                GROUP BY solver
-                ORDER BY solved DESC
-                LIMIT 10
+        // --------------- Explorer Tab ---------------
+
+        function initExplorer() {
+            // Populate filter dropdowns
+            const years = query(`SELECT DISTINCT year FROM instance_year_track WHERE year IS NOT NULL ORDER BY year`);
+            const tracks = query(`SELECT DISTINCT track_type FROM instance_year_track WHERE track_type IS NOT NULL ORDER BY track_type`);
+            const families = query(`
+                SELECT DISTINCT i.family FROM instances i
+                JOIN results r ON i.hash = r.instance_hash
+                WHERE i.family IS NOT NULL AND i.family <> 'empty'
+                ORDER BY i.family
+            `);
+            const runs = query(`
+                SELECT run_id, solver_version || ' ' || COALESCE(tag, '') || ' (' || substr(timestamp,1,10) || ')' as label
+                FROM runs ORDER BY timestamp DESC
             `);
 
-            if (!data.values.length) {
-                document.getElementById('chart-competition').parentElement.innerHTML =
-                    '<h2>SpinSAT vs Competition</h2><p style="color: var(--text-muted)">No competition data imported yet. Run import_competition_data.py</p>';
-                return;
-            }
+            const yearSel = document.getElementById('filter-year');
+            years.values.forEach(r => { yearSel.innerHTML += `<option value="${r[0]}">${r[0]}</option>`; });
 
-            new Chart(document.getElementById('chart-competition'), {
-                type: 'bar',
-                data: {
-                    labels: data.values.map(r => r[0]),
-                    datasets: [{
-                        label: 'Instances Solved',
-                        data: data.values.map(r => r[1]),
-                        backgroundColor: '#3fb95088',
-                        borderColor: '#3fb950',
-                        borderWidth: 1,
-                    }]
-                },
-                options: {
-                    indexAxis: 'y',
-                    responsive: true,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        x: { beginAtZero: true, ticks: { color: '#8b949e' }, grid: { color: '#30363d' } },
-                        y: { ticks: { color: '#8b949e' }, grid: { display: false } }
-                    }
-                }
-            });
+            const trackSel = document.getElementById('filter-track');
+            tracks.values.forEach(r => { trackSel.innerHTML += `<option value="${r[0]}">${r[0]}</option>`; });
+
+            const famSel = document.getElementById('filter-family');
+            families.values.forEach(r => { famSel.innerHTML += `<option value="${esc(r[0])}">${esc(r[0])}</option>`; });
+
+            const runSel = document.getElementById('filter-run');
+            runs.values.forEach(r => { runSel.innerHTML += `<option value="${r[0]}">${esc(r[1])}</option>`; });
+
+            [yearSel, trackSel, famSel, runSel].forEach(el => el.addEventListener('change', renderExplorer));
+            renderExplorer();
         }
 
-        function renderCompetitionTable() {
-            renderTable('table-competition', query(`
+        function renderExplorer() {
+            const year = document.getElementById('filter-year').value;
+            const track = document.getElementById('filter-track').value;
+            const family = document.getElementById('filter-family').value;
+            const runId = document.getElementById('filter-run').value;
+
+            // Build WHERE clauses for instance filtering
+            const whereParts = [];
+            if (year) whereParts.push(`iyt.year = ${parseInt(year)}`);
+            if (track) whereParts.push(`iyt.track_type = '${track}'`);
+            if (family) whereParts.push(`i.family = '${family}'`);
+
+            const instanceWhere = whereParts.length ? 'WHERE ' + whereParts.join(' AND ') : '';
+
+            // SpinSAT best time per instance (or for specific run)
+            const spinTimeExpr = runId
+                ? `(SELECT r2.time_s FROM results r2 WHERE r2.instance_hash = bt.instance_hash AND r2.run_id = '${runId}' AND r2.status = 'SATISFIABLE')`
+                : `bt.best_time`;
+
+            const spinVersionExpr = runId
+                ? `(SELECT ru2.solver_version FROM runs ru2 WHERE ru2.run_id = '${runId}')`
+                : `bt.solver_version`;
+
+            const spinStatusExpr = runId
+                ? `COALESCE((SELECT r2.status FROM results r2 WHERE r2.instance_hash = bt.instance_hash AND r2.run_id = '${runId}'), 'NOT RUN')`
+                : `'SATISFIABLE'`;
+
+            // Get the timeout for ratio display
+            const timeoutQ = runId
+                ? query(`SELECT timeout_s FROM runs WHERE run_id = '${runId}'`)
+                : query(`SELECT MAX(timeout_s) FROM runs`);
+            const timeout = timeoutQ.values[0]?.[0] || 300;
+
+            // Head-to-head query
+            const sql = `
                 SELECT
-                    solver as Solver,
-                    COUNT(*) as Total,
-                    SUM(CASE WHEN status IN ('SAT', 'SATISFIABLE') THEN 1 ELSE 0 END) as Solved,
-                    ROUND(AVG(CASE WHEN status IN ('SAT', 'SATISFIABLE') THEN time_s END), 2) as 'Avg Time',
-                    ROUND(MIN(CASE WHEN status IN ('SAT', 'SATISFIABLE') THEN time_s END), 4) as 'Best Time'
-                FROM competition_results
-                GROUP BY solver
-                ORDER BY Solved DESC
-                LIMIT 15
-            `));
+                    COALESCE(if2.value, substr(bt.instance_hash, 1, 16)) as Instance,
+                    COALESCE(i.family, '') as Family,
+                    COALESCE(iyt.year, '') as Year,
+                    COALESCE(iyt.track_type, '') as Track,
+                    COALESCE(r_detail.num_vars, feat.num_vars, '') as Vars,
+                    COALESCE(r_detail.num_clauses, feat.num_clauses, '') as Clauses,
+                    ${spinStatusExpr} as "SpinSAT Status",
+                    ROUND(${spinTimeExpr}, 4) as "SpinSAT Time",
+                    ${spinVersionExpr} as "SpinSAT Ver",
+                    cb.best_solver as "Best Comp Solver",
+                    ROUND(cb.best_time_s, 4) as "Best Comp Time",
+                    CASE
+                        WHEN ${spinTimeExpr} IS NULL THEN NULL
+                        WHEN cb.best_time_s IS NULL THEN NULL
+                        WHEN cb.best_time_s = 0 THEN NULL
+                        ELSE ROUND(${spinTimeExpr} / cb.best_time_s, 1)
+                    END as Ratio
+                FROM best_times bt
+                LEFT JOIN competition_best cb ON bt.instance_hash = cb.instance_hash
+                LEFT JOIN instance_files if2 ON bt.instance_hash = if2.hash
+                LEFT JOIN instances i ON bt.instance_hash = i.hash
+                LEFT JOIN instance_features feat ON bt.instance_hash = feat.instance_hash
+                LEFT JOIN instance_year_track iyt ON bt.instance_hash = iyt.hash
+                LEFT JOIN results r_detail ON bt.instance_hash = r_detail.instance_hash
+                    AND r_detail.run_id = bt.run_id
+                ${instanceWhere}
+                GROUP BY bt.instance_hash
+                ORDER BY ${spinTimeExpr} IS NULL, ${spinTimeExpr}
+            `;
+
+            const data = query(sql);
+
+            // Compute summary stats
+            let totalInst = data.values.length;
+            let spinSolved = 0, compHasBest = 0, ratioSum = 0, ratioCount = 0;
+            data.values.forEach(row => {
+                if (row[6] === 'SATISFIABLE') spinSolved++;
+                if (row[10] !== null) compHasBest++;
+                if (row[11] !== null) { ratioSum += row[11]; ratioCount++; }
+            });
+
+            const statsHtml = [
+                `<span class="es-item">Instances: <span class="es-value">${totalInst}</span></span>`,
+                `<span class="es-item">SpinSAT solved: <span class="es-value">${spinSolved}</span></span>`,
+                `<span class="es-item">With comp. ref: <span class="es-value">${compHasBest}</span></span>`,
+                ratioCount > 0
+                    ? `<span class="es-item">Avg ratio (SpinSAT/Comp): <span class="es-value">${(ratioSum/ratioCount).toFixed(1)}x</span></span>`
+                    : '',
+                `<span class="es-item">Timeout: <span class="es-value">${timeout}s</span></span>`,
+            ].filter(Boolean).join('');
+            document.getElementById('explorer-stats').innerHTML = statsHtml;
+
+            // Render with ratio coloring
+            renderTable('table-explorer', data);
+
+            // Apply ratio colors post-render
+            const ratioColIdx = data.columns.indexOf('Ratio');
+            if (ratioColIdx >= 0) {
+                document.querySelectorAll('#table-explorer tbody tr').forEach((tr, ri) => {
+                    const td = tr.children[ratioColIdx];
+                    const v = data.values[ri][ratioColIdx];
+                    if (v === null) td.className = 'ratio-timeout';
+                    else if (v < 2) td.className = 'ratio-good';
+                    else if (v < 10) td.className = 'ratio-ok';
+                    else td.className = 'ratio-bad';
+                });
+            }
         }
+
+        // --------------- SQL Explorer ---------------
 
         function runQuery() {
             const sql = document.getElementById('sql-input').value;
-            const result = query(sql);
-            renderTable('query-results', result);
+            renderTable('query-results', query(sql));
         }
 
-        // Tab switching
+        // --------------- Tab switching ---------------
+
         document.querySelectorAll('.tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -556,6 +875,11 @@ ORDER BY ru.solver_version;</textarea>
                 tab.classList.add('active');
                 document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
             });
+        });
+
+        // Escape key closes drill
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeDrill();
         });
 
         // Init
