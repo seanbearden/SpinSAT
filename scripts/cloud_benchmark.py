@@ -336,7 +336,7 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
     # Execution
     # ------------------------------------------------------------------
 
-    def run(self, timeout, tag=""):
+    def run(self, timeout, tag="", solver_args=None):
         """Run the benchmark on the VM via nohup (survives SSH drops).
 
         The worker runs detached and writes results incrementally to
@@ -349,13 +349,16 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
         print("=" * 60)
         print(f"  Parallelism: {self.parallelism} (competition-faithful)")
         print(f"  Timeout: {timeout}s per instance")
+        if solver_args:
+            print(f"  Solver args: {' '.join(solver_args)}")
         print()
 
         # Launch worker detached via nohup so it survives SSH drops
+        extra = " ".join(solver_args) if solver_args else ""
         launch_cmd = (
             f"nohup sudo /tmp/cloud_worker.sh "
             f"/tmp/spinsat /tmp/instances {timeout} "
-            f"{self.parallelism} /tmp/results.json "
+            f"{self.parallelism} /tmp/results.json {extra} "
             f"> /tmp/worker_stdout.log 2>&1 &"
         )
         self._ssh(launch_cmd, timeout=30)

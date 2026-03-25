@@ -5,7 +5,7 @@
 # Designed to survive SSH disconnects: runs detached, writes results
 # incrementally, and merges partial results on every completion.
 #
-# Usage: cloud_worker.sh <solver> <instances_dir> <timeout> <parallelism> <results_file>
+# Usage: cloud_worker.sh <solver> <instances_dir> <timeout> <parallelism> <results_file> [solver_args...]
 
 set -euo pipefail
 
@@ -14,6 +14,8 @@ INSTANCES_DIR="$2"
 TIMEOUT="$3"
 PARALLELISM="${4:-8}"
 RESULTS_FILE="$5"
+shift 5
+SOLVER_ARGS=("$@")  # Extra args passed to solver (e.g., -m euler)
 
 # Fixed results directory (not mktemp) so recovery can find it
 RESULTS_DIR="/tmp/spinsat_results"
@@ -114,7 +116,7 @@ run_worker() {
         local start_ns end_ns elapsed_ms exit_code
         start_ns=$(date +%s%N)
         set +e
-        timeout "$TIMEOUT" taskset -c "$core_id" "$SOLVER" "$cnf_path" > "$out_file" 2> "$err_file"
+        timeout "$TIMEOUT" taskset -c "$core_id" "$SOLVER" "${SOLVER_ARGS[@]}" "$cnf_path" > "$out_file" 2> "$err_file"
         exit_code=$?
         set -e
         end_ns=$(date +%s%N)
