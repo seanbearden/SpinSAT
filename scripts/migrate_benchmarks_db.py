@@ -43,6 +43,8 @@ RESULTS_NEW_COLUMNS = [
     ("cpu_time_s", "REAL"),
     ("num_vars", "INTEGER"),
     ("num_clauses", "INTEGER"),
+    ("cdcl_handoffs", "INTEGER"),
+    ("solved_by", "TEXT"),
 ]
 
 # --- Tag parsing ---

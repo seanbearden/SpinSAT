@@ -189,6 +189,8 @@ def parse_spinsat_stderr(stderr):
         "final_dt": None,
         "restart_strategy": None,
         "preprocessing": None,
+        "cdcl_handoffs": 0,
+        "solved_by": None,  # "dmm", "cadical", "preprocessing"
     }
 
     preprocess_techniques = []
@@ -209,6 +211,8 @@ def parse_spinsat_stderr(stderr):
         if m:
             info["restarts"] = int(m.group(1))
             info["method_used"] = m.group(2)
+            if not info["solved_by"]:
+                info["solved_by"] = "dmm"
 
         # "c Restart 5 Euler Cycling ..." or "c Restart 5 Euler Cold ..."
         m = re.search(r"Restart (\d+)\s+\S+\s+(\S+)", line)
@@ -243,6 +247,28 @@ def parse_spinsat_stderr(stderr):
         # "c Solved by preprocessing alone!"
         if "Solved by preprocessing alone" in line:
             preprocess_techniques.append("solved_by_preprocess")
+            info["solved_by"] = "preprocessing"
+
+        # "c UNSAT signal XlStagnation fired (handoff #3, elapsed: 12.5s, ...)"
+        m = re.search(r"UNSAT signal (\S+) fired \(handoff #(\d+)", line)
+        if m:
+            info["cdcl_handoffs"] = int(m.group(2))
+
+        # "c CaDiCaL found SAT (handoff #2, elapsed: 5.3s)"
+        if "CaDiCaL found SAT" in line:
+            info["solved_by"] = "cadical"
+
+        # "c CaDiCaL proved UNSAT (handoff #3, elapsed: 8.1s)"
+        if "CaDiCaL proved UNSAT" in line:
+            info["solved_by"] = "cadical"
+
+        # "c Adaptive CDCL proved UNSAT"
+        if "Adaptive CDCL proved UNSAT" in line:
+            info["solved_by"] = "cadical"
+
+        # "c CDCL proved UNSAT" (final fallback)
+        if re.search(r"^c CDCL proved UNSAT", line):
+            info["solved_by"] = "cadical"
 
         # "c Preprocessing: 50 vars → 47, 215 clauses → 210 ..."
         if "Preprocessing:" in line:
@@ -593,8 +619,8 @@ def record_to_db(results, solver_name, run_metadata):
             (run_id, instance_hash, status, time_s, steps, restarts,
              verified, seed, zeta, alpha, beta, gamma, delta, epsilon,
              dt_min, dt_max, peak_xl_max, final_dt, wall_clock_s, cpu_time_s,
-             num_vars, num_clauses)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             num_vars, num_clauses, cdcl_handoffs, solved_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             run_id,
             instance_hash,
@@ -618,6 +644,8 @@ def record_to_db(results, solver_name, run_metadata):
             r.get("cpu_time_s"),
             r.get("num_vars"),
             r.get("num_clauses"),
+            r.get("cdcl_handoffs"),
+            r.get("solved_by"),
         ))
         recorded += 1
 
@@ -742,6 +770,7 @@ def cloud_run(args, instances, suite_name):
             str(PROJECT_ROOT / "target" / "release" / "spinsat")
         )
         git_commit, git_dirty = detect_git_info()
+        cli_command = " ".join(sys.argv)
         run_metadata = {
             "run_id": run_id,
             "solver_version": solver_version,
@@ -751,13 +780,21 @@ def cloud_run(args, instances, suite_name):
             "rust_version": detect_rust_version(),
             "timestamp": results.get("timestamp", datetime.now(timezone.utc).isoformat()),
             "notes": f"cloud run: {env.get('zone', '')}, spot={env.get('spot', '')}, parallelism={env.get('parallelism', '')}",
+            "cli_command": cli_command,
+            "tag_purpose": getattr(args, "purpose", None),
+            "tag_instance_set": getattr(args, "instance_set", None),
+            "tag_config": getattr(args, "config", None),
         }
-        # Pick up strategy from first result
+        # Pick up strategy/method/restart/preprocessing from first result
         for inst in results.get("instances", []):
             r = inst.get("spinsat", {})
             if r.get("strategy"):
                 run_metadata["strategy"] = r["strategy"]
                 run_metadata["integration_method"] = r.get("method_used")
+                if r.get("restart_strategy"):
+                    run_metadata["restart_strategy"] = r["restart_strategy"]
+                if r.get("preprocessing"):
+                    run_metadata["preprocessing"] = r["preprocessing"]
                 break
 
         recorded = record_to_db(results, "spinsat", run_metadata)

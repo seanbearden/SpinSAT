@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS results (
     cpu_time_s REAL,
     num_vars INTEGER,
     num_clauses INTEGER,
+    cdcl_handoffs INTEGER,
+    solved_by TEXT,
     PRIMARY KEY (run_id, instance_hash)
 );
 
