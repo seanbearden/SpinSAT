@@ -165,7 +165,11 @@ class CloudBenchmark:
             "--image-project", DEFAULT_IMAGE_PROJECT,
             "--boot-disk-size", "20GB",
             "--boot-disk-type", "pd-ssd",
-            # Auto-shutdown safety net
+            # Server-side hard limit — GCP stops the VM after this duration
+            # regardless of startup script or SSH state
+            "--max-run-duration", f"{self.max_hours * 3600}s",
+            "--instance-termination-action", "STOP",
+            # Startup script shutdown as belt-and-suspenders backup
             "--metadata", f"max_hours={self.max_hours}",
             "--metadata-from-file",
             f"startup-script={self._create_startup_script()}",
@@ -174,7 +178,6 @@ class CloudBenchmark:
 
         if self.spot:
             args.append("--provisioning-model=SPOT")
-            args.append("--instance-termination-action=STOP")
 
         self._gcloud(args, timeout=180)
         self._instance_created = True
@@ -573,19 +576,33 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
 
     @staticmethod
     def cleanup_instances(project=GCP_PROJECT):
-        """List and optionally delete leftover benchmark instances."""
+        """List and optionally delete leftover spinsat instances."""
         result = subprocess.run(
             [
                 "gcloud", "compute", "instances", "list",
-                "--filter", "name~spinsat-bench",
-                "--format", "table(name,zone,status,creationTimestamp)",
+                "--filter", "name~spinsat",
+                "--format", "table(name,zone,machineType.basename(),status,creationTimestamp)",
                 "--project", project,
             ],
             capture_output=True, text=True, timeout=30,
         )
         if not result.stdout.strip():
-            print("No benchmark instances found.")
+            print("No spinsat instances found.")
             return
 
-        print("Benchmark instances:")
+        print("SpinSAT instances:")
         print(result.stdout)
+
+        # Also list orphaned disks not attached to any instance
+        disk_result = subprocess.run(
+            [
+                "gcloud", "compute", "disks", "list",
+                "--filter", "name~spinsat AND -users:*",
+                "--format", "table(name,zone.basename(),sizeGb,type.basename(),status)",
+                "--project", project,
+            ],
+            capture_output=True, text=True, timeout=30,
+        )
+        if disk_result.stdout.strip():
+            print("\nOrphaned disks (not attached to any instance):")
+            print(disk_result.stdout)

@@ -285,6 +285,27 @@ If `--tag` is omitted, a legacy tag is auto-generated: `{version}-{instance_set}
 python3 scripts/benchmark_suite.py --suite tiny --solver spinsat
 ```
 
+### Cloud Benchmarking (GCP)
+
+**Always use `benchmark_suite.py --cloud`** to create VMs. It enforces:
+- **Server-side `--max-run-duration`** (default 6h) — GCP auto-stops the VM regardless of script state
+- **Startup script `shutdown -h`** as belt-and-suspenders backup
+- Naming convention (`spinsat-bench-*`) for cleanup tracking
+- Spot pricing by default
+
+**Never create benchmark VMs manually** (e.g. `gcloud compute instances create spinsat-foo`). Manually-created VMs have no auto-shutdown and will run indefinitely, accruing costs.
+
+```bash
+# Run benchmarks on GCP (default: 6h max, spot, n2-highcpu-8)
+python3 scripts/benchmark_suite.py --cloud --instances benchmarks/sat2017/*qhid*.cnf --timeout 5000 --record --tag v0.5.1-qhid
+
+# Cleanup: find ALL spinsat VMs and orphaned disks
+python3 scripts/benchmark_suite.py --cloud-cleanup
+
+# Recover results from a VM that lost SSH
+python3 scripts/benchmark_suite.py --cloud-recover spinsat-bench-20260322-162629
+```
+
 ### Auto-Detection (`--record` flag)
 
 The benchmark script auto-detects all metadata with zero manual input:
