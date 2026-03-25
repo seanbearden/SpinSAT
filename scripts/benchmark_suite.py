@@ -734,8 +734,9 @@ def cloud_run(args, instances, suite_name):
         cb.upload_solver()
         cb.upload_worker_script()
         cb.upload_instances(instances)
+        solver_args = args.solver_args.split() if args.solver_args else None
         remote_results = cb.run(timeout=args.timeout, tag=args.tag,
-                                solver_args=args.solver_args)
+                                solver_args=solver_args)
 
         results = cb.download_results(
             remote_results,
@@ -822,8 +823,8 @@ def main():
                         help="Notes for this recorded run")
     parser.add_argument("--force", action="store_true",
                         help="Record even with uncommitted changes (skip prompt)")
-    parser.add_argument("--solver-args", nargs="+", default=[],
-                        help="Extra args passed to solver (e.g., --solver-args -m euler)")
+    parser.add_argument("--solver-args", default="",
+                        help="Extra args passed to solver as a single string (e.g., --solver-args='-m euler')")
 
     # Structured tagging
     tag_group = parser.add_argument_group("structured tags (for --record)")
