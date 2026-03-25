@@ -38,7 +38,13 @@ CREATE TABLE IF NOT EXISTS runs (
     hardware TEXT,
     rust_version TEXT,
     tag TEXT,
-    notes TEXT
+    notes TEXT,
+    restart_strategy TEXT,
+    preprocessing TEXT,
+    cli_command TEXT,
+    tag_purpose TEXT,
+    tag_instance_set TEXT,
+    tag_config TEXT
 );
 
 -- Per-instance results within a run
@@ -59,6 +65,12 @@ CREATE TABLE IF NOT EXISTS results (
     epsilon REAL,
     dt_min REAL,
     dt_max REAL,
+    peak_xl_max REAL,
+    final_dt REAL,
+    wall_clock_s REAL,
+    cpu_time_s REAL,
+    num_vars INTEGER,
+    num_clauses INTEGER,
     PRIMARY KEY (run_id, instance_hash)
 );
 
@@ -81,6 +93,22 @@ CREATE TABLE IF NOT EXISTS instance_features (
     family TEXT,
     modularity REAL,
     community_structure REAL
+);
+
+-- Materialized year/track lookup from instance_tracks
+CREATE TABLE IF NOT EXISTS instance_year_track (
+    hash TEXT PRIMARY KEY,
+    year INTEGER,
+    track_type TEXT
+);
+
+-- Best competition solver time per instance (for benchmarked instances)
+CREATE TABLE IF NOT EXISTS competition_best (
+    instance_hash TEXT PRIMARY KEY,
+    best_solver TEXT,
+    best_time_s REAL,
+    competition TEXT,
+    timeout_s INTEGER
 );
 
 -- Best solve time per instance across all versions
@@ -116,6 +144,9 @@ CREATE INDEX IF NOT EXISTS idx_runs_version ON runs(solver_version);
 CREATE INDEX IF NOT EXISTS idx_runs_timestamp ON runs(timestamp);
 CREATE INDEX IF NOT EXISTS idx_competition_hash ON competition_results(instance_hash);
 CREATE INDEX IF NOT EXISTS idx_competition_solver ON competition_results(solver);
+CREATE INDEX IF NOT EXISTS idx_instance_year_track_year ON instance_year_track(year);
+CREATE INDEX IF NOT EXISTS idx_instance_year_track_type ON instance_year_track(track_type);
+CREATE INDEX IF NOT EXISTS idx_competition_best_hash ON competition_best(instance_hash);
 """
 
 
