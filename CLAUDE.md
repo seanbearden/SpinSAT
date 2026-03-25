@@ -172,13 +172,36 @@ python3 scripts/benchmark_suite.py --suite ... --record --tag ...
 
 ## Benchmarking
 
-### Database (`benchmarks.db`)
+### Getting `benchmarks.db`
 
-SQLite database in project root (gitignored, distributed via GitHub Releases). Contains:
-- **Instance metadata**: 31,809 instances from SAT competition history (snapshot from `~/PycharmProjects/SpinSAT/meta.db`)
-- **Benchmark results**: per-instance solve times with full reproducibility metadata
-- **Competition reference**: SAT competition solve times for comparison
-- **Views**: `best_times`, `version_comparison`
+SQLite database in project root (gitignored, distributed via GitHub Releases).
+
+```bash
+# Download latest from releases
+gh release download --pattern 'benchmarks.db' --dir . --clobber
+
+# If schema is outdated (missing new columns), migrate:
+python3 scripts/migrate_benchmarks_db.py
+
+# If starting from scratch (needs ~/PycharmProjects/SpinSAT/meta.db):
+python3 scripts/init_benchmarks_db.py
+```
+
+### Database Schema
+
+| Table | Purpose | Size |
+|-------|---------|------|
+| `runs` | One row per benchmark session — version, commit, method, restart strategy, preprocessing, CLI command, structured tags, timeout | ~10 rows |
+| `results` | Per-instance results — status, time, restarts, seed, zeta, peak_xl_max, final_dt, wall/cpu time, num_vars, num_clauses | ~500 rows |
+| `instances` | 31K instance metadata snapshot from GBD | ~31K rows |
+| `instance_year_track` | Materialized year + track type per instance (parsed from `instance_tracks`) | ~19K rows |
+| `instance_files` | Instance filename lookup by hash | ~31K rows |
+| `competition_best` | Best competition solver/time per benchmarked instance (one row each) | sparse |
+| `competition_results` | Empty in main DB — full data (150K rows) lives in `competition_archive.db` on Releases | 0 rows |
+
+**Views**: `best_times` (best solve time per instance across all runs), `version_comparison` (pivot results by version)
+
+**Target size**: Under 100MB. Currently ~26MB after competition data split.
 
 ### Benchmarking Rules
 
@@ -186,18 +209,30 @@ SQLite database in project root (gitignored, distributed via GitHub Releases). C
 
 **Only benchmark against competition instances.** Generated/planted instances are for development smoke tests only — never record them to the DB.
 
-**Workflow — always in this order:**
-1. Query `competition_results` to find instances with known solve times
-2. Download those instances from GBD
-3. Run SpinSAT against them with `--record`
-4. Upload DB to release + redeploy dashboard
+**Always rebuild before recording.** The `--record` flag reads version from the compiled binary. Stale binary = stale version in DB.
+
+```bash
+cargo build --release
+./target/release/spinsat -V  # verify correct version
+```
 
 ### Competition Reference Data
 
-**Source**: SAT Competition 2022 Anniversary Track (imported into `competition_results` table)
+**Source**: SAT Competition 2022 Anniversary Track
 - 5,355 instances x 28 solvers = 149,940 reference results
 - Solvers include: Kissat, CaDiCaL, IsaSAT, SLIME, and variants
 - Data from: https://github.com/mathefuchs/al-for-sat-solver-benchmarking-data
+
+**Data split**: Full competition data lives in `competition_archive.db` (32MB, on GitHub Releases). The main `benchmarks.db` keeps only `competition_best` — one row per benchmarked instance with the best solver/time. This is auto-updated when you run `--record`.
+
+To query full competition data for instance selection:
+```bash
+gh release download --pattern 'competition_archive.db' --dir . --clobber
+sqlite3 competition_archive.db "
+SELECT instance_hash, solver, time_s FROM competition_results
+WHERE status = 'SAT' ORDER BY time_s LIMIT 20;
+"
+```
 
 **Importing** (one-time setup, already done):
 ```bash
@@ -206,55 +241,119 @@ python3 scripts/import_competition_data.py --anni-csv /tmp/al-sat/gbd-data/anni-
 python3 scripts/import_competition_data.py --status
 ```
 
-### Setup & Usage
+### Recording Benchmark Results
+
+**Workflow — always in this order:**
+1. Find instances with competition reference data (query `competition_archive.db` or `competition_best`)
+2. Download those instances from GBD
+3. Build solver, verify version
+4. Run SpinSAT against them with `--record` and structured tags
+5. Upload DB to release + redeploy dashboard
+
+**Basic recording:**
 ```bash
-# Initialize DB (one-time, snapshots meta.db)
-python3 scripts/init_benchmarks_db.py
+python3 scripts/benchmark_suite.py \
+    --instances benchmarks/competition/anni_2022/*.cnf \
+    --record --force \
+    --tag v0.5.1-anni2022 \
+    --timeout 300
+```
 
-# Step 1: Find instances WITH competition reference data
-sqlite3 benchmarks.db "
-SELECT cr.instance_hash, if2.value, i.family, ROUND(MIN(cr.time_s), 2) as best_time
-FROM competition_results cr
-JOIN instances i ON cr.instance_hash = i.hash
-JOIN instance_files if2 ON i.hash = if2.hash
-WHERE cr.status = 'SAT'
-GROUP BY cr.instance_hash
-HAVING best_time BETWEEN 0.1 AND 60
-ORDER BY best_time LIMIT 30;
-"
+**With structured tags (preferred):**
+```bash
+python3 scripts/benchmark_suite.py \
+    --instances benchmarks/competition/anni_2022/*.cnf \
+    --record --force \
+    --timeout 300 \
+    --purpose competition-benchmark \
+    --instance-set anni2022 \
+    --config cycling
+```
 
-# Step 2: Download those specific instances
-python3 scripts/download_competition_instances.py --hashes <hash1> <hash2> ... --output-dir benchmarks/competition/anni_2022
+**Structured tag flags:**
 
-# Step 3: Run SpinSAT and record
-python3 scripts/benchmark_suite.py --instances benchmarks/competition/anni_2022/*.cnf --record --force --tag v0.4.1-anni2022 --timeout 300
+| Flag | Allowed values | Description |
+|------|---------------|-------------|
+| `--purpose` | `paper-verification`, `competition-benchmark`, `regression-test`, `development` | Why this run exists |
+| `--instance-set` | `barthel`, `komb`, `qhid`, `anni2022`, `sat2025-main`, `uniform-random` | Which instance collection |
+| `--config` | `default`, `cycling`, `smart-restart`, `no-preprocess` | Solver configuration used |
 
-# Step 4: Upload and redeploy dashboard
-gh release upload <tag> benchmarks.db --clobber
-gh workflow run "Deploy Dashboard"
+If `--tag` is omitted, a legacy tag is auto-generated: `{version}-{instance_set}-{config}`.
 
-# Development run (JSON only, no DB recording)
+**Development run (no DB recording):**
+```bash
 python3 scripts/benchmark_suite.py --suite tiny --solver spinsat
-
-# Refresh instance metadata from meta.db
-python3 scripts/init_benchmarks_db.py --refresh
 ```
 
 ### Auto-Detection (`--record` flag)
-The benchmark script auto-detects with zero manual input:
+
+The benchmark script auto-detects all metadata with zero manual input:
+
+**Per run** (stored in `runs` table):
 - Solver version from `spinsat --version`
 - Git commit hash and dirty state
-- Hardware description
-- Rust compiler version
-- ODE parameters from SpinSAT stderr (strategy, zeta, seed, restarts, method)
+- Hardware description, Rust compiler version
+- Integration method, strategy (from solver stderr)
+- Restart strategy (from solver stderr restart lines, e.g., `Cycling`, `Cold`)
+- Preprocessing techniques applied (from solver stderr, e.g., `bve,pure_lit`)
+- Full CLI command for reproducibility
+
+**Per instance** (stored in `results` table):
+- Status (`SATISFIABLE`/`TIMEOUT`/`UNKNOWN`), solve time
+- Restarts, seed, zeta
+- `peak_xl_max` — max long-term memory value reached during integration
+- `final_dt` — final adaptive time step at solve/timeout
+- `wall_clock_s`, `cpu_time_s` — separate timing via `resource.getrusage()`
+- `num_vars`, `num_clauses` — parsed from DIMACS header
+
+**Post-recording**: The script auto-updates the `competition_best` table (upserts best competition solver/time for each benchmarked instance).
+
+### Useful Queries
+
+```sql
+-- Head-to-head: SpinSAT vs competition best
+SELECT
+    if2.value as instance,
+    ROUND(bt.best_time, 4) as spinsat_time,
+    bt.solver_version,
+    cb.best_solver as comp_solver,
+    ROUND(cb.best_time_s, 4) as comp_time,
+    ROUND(bt.best_time / cb.best_time_s, 1) as ratio
+FROM best_times bt
+JOIN competition_best cb USING(instance_hash)
+JOIN instance_files if2 ON bt.instance_hash = if2.hash
+ORDER BY ratio;
+
+-- Results by year/track
+SELECT
+    iyt.year, iyt.track_type,
+    COUNT(*) as instances,
+    SUM(CASE WHEN r.status = 'SATISFIABLE' THEN 1 ELSE 0 END) as solved
+FROM results r
+JOIN instance_year_track iyt ON r.instance_hash = iyt.hash
+JOIN runs ru USING(run_id)
+GROUP BY iyt.year, iyt.track_type
+ORDER BY iyt.year, iyt.track_type;
+
+-- Run details with structured tags
+SELECT run_id, solver_version, tag_purpose, tag_instance_set, tag_config,
+       restart_strategy, preprocessing, timeout_s, cli_command
+FROM runs ORDER BY timestamp DESC;
+```
 
 ### Dashboard & GitHub Pages
 
 **URL**: https://seanbearden.github.io/SpinSAT/
 
-The dashboard is deployed via GitHub Actions (`.github/workflows/deploy-pages.yml`), NOT from the `docs/` branch directly. The workflow downloads `benchmarks.db` from the latest GitHub Release at deploy time, so the DB is never committed to git.
+The dashboard is deployed via GitHub Actions (`.github/workflows/deploy-pages.yml`). It downloads `benchmarks.db` from the latest GitHub Release at deploy time — the DB is never committed to git.
 
-**To update dashboard data after recording new benchmarks:**
+**Dashboard tabs:**
+- **Overview** — PAR-2 chart (with timeout reference in labels), runs table with click-to-drill-down
+- **Explorer** — Head-to-head SpinSAT vs competition best, filtered by year/track/family/run
+- **Version Comparison** — All runs with method, restart, PAR-2
+- **SQL Explorer** — Run arbitrary queries against the DB
+
+**To update dashboard after recording benchmarks:**
 ```bash
 # 1. Upload updated DB to the latest release
 gh release upload <tag> benchmarks.db --clobber
@@ -265,8 +364,7 @@ gh workflow run "Deploy Dashboard"                    # manual trigger
 # OR merge a release-plz PR                          # auto-triggers on release
 ```
 
-**Dashboard source**: `docs/dashboard/index.html` (sql.js-httpvfs, Chart.js)
-- Loads `benchmarks.db` from same origin (downloaded from Releases at deploy time)
+**Dashboard source**: `docs/dashboard/index.html` (sql.js, Chart.js)
 - Do NOT commit `benchmarks.db` to `docs/dashboard/` — it bloats git history
 - GitHub Pages source is set to "GitHub Actions" in repo settings (not "Deploy from branch")
 
