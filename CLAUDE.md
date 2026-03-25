@@ -216,6 +216,14 @@ cargo build --release
 ./target/release/spinsat -V  # verify correct version
 ```
 
+**Cloud runs require rebuilding the musl binary too.** The cloud path uploads `target/x86_64-unknown-linux-musl/release/spinsat`, NOT the local `target/release/spinsat`. If you only run `cargo build --release`, the musl binary stays stale and the cloud VM runs old solver code (missing stderr diagnostics like peak_xl_max, final_dt).
+
+```bash
+# Always rebuild BOTH before cloud benchmarks:
+cargo build --release
+cargo build --release --target x86_64-unknown-linux-musl
+```
+
 ### Competition Reference Data
 
 **Source**: SAT Competition 2022 Anniversary Track
