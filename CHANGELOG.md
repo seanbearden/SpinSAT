@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/seanbearden/SpinSAT/compare/v0.5.1...v0.5.2) - 2026-03-25
+
+### Added
+
+- cloud worker captures all diagnostic fields from solver stderr
+- track solved_by (dmm/cadical/preprocessing) and cdcl_handoffs per result
+- dashboard rewrite with Explorer tab, run drill-down, and PAR-2 context
+- split competition data into archive DB for size discipline
+- benchmark script captures new metadata fields and structured tags
+- schema migration — add columns, tables, and backfill data (ss-34v)
+- emit peak_xl_max and final_dt diagnostics on stderr
+
+### Fixed
+
+- dashboard gracefully handles pre-migration DB schema
+- add server-side VM timeout and broaden cleanup to all spinsat VMs
+- auto-save uncommitted implementation work (ss-zvs, gt-pvx safety net)
+- SSH poll loop reliability — single call, proper timeouts, max retries
+
+### Other
+
+- update CLAUDE.md benchmarking section with new schema and workflow
+- tune restart params — xl_decay=0.5, noise=0.05
+- update Serena memories with mixed batch test results (7/10 solved)
+
 ## [0.5.1](https://github.com/seanbearden/SpinSAT/compare/v0.5.0...v0.5.1) - 2026-03-23
 
 ### Added
