@@ -145,6 +145,8 @@ run_worker() {
 
         # Parse SpinSAT stderr
         local restarts=0 method_used="null" strategy="null" zeta="null" seed="null"
+        local peak_xl_max="null" final_dt="null" solved_by="null" cdcl_handoffs=0
+        local restart_strategy="null" preprocessing="null"
         if [ -f "$err_file" ]; then
             local strat_line
             strat_line=$(grep "strategy=" "$err_file" 2>/dev/null || true)
@@ -163,6 +165,60 @@ run_worker() {
                 method_used=$(echo "$solved_line" | sed -n 's/.*using \([^ ]*\).*/\1/p')
                 [ -n "$method_used" ] && method_used="\"$method_used\"" || method_used="null"
                 [ -n "$restarts" ] || restarts=0
+                solved_by="\"dmm\""
+            fi
+
+            # peak_xl_max and final_dt
+            local pxl
+            pxl=$(grep "peak_xl_max:" "$err_file" 2>/dev/null | sed -n 's/.*peak_xl_max: *\([^ ]*\).*/\1/p' || true)
+            [ -n "$pxl" ] && peak_xl_max="$pxl"
+            local fdt
+            fdt=$(grep "final_dt:" "$err_file" 2>/dev/null | sed -n 's/.*final_dt: *\([^ ]*\).*/\1/p' || true)
+            [ -n "$fdt" ] && final_dt="$fdt"
+
+            # CaDiCaL handoffs
+            local handoff_line
+            handoff_line=$(grep "UNSAT signal" "$err_file" 2>/dev/null | tail -1 || true)
+            if [ -n "$handoff_line" ]; then
+                cdcl_handoffs=$(echo "$handoff_line" | sed -n 's/.*handoff #\([0-9]*\).*/\1/p')
+                [ -n "$cdcl_handoffs" ] || cdcl_handoffs=0
+            fi
+
+            # solved_by detection
+            if grep -q "CaDiCaL found SAT\|CaDiCaL proved UNSAT\|CDCL proved UNSAT\|Adaptive CDCL proved UNSAT" "$err_file" 2>/dev/null; then
+                solved_by="\"cadical\""
+            fi
+            if grep -q "Solved by preprocessing alone" "$err_file" 2>/dev/null; then
+                solved_by="\"preprocessing\""
+            fi
+
+            # Restart strategy (from restart lines: "c Restart N Method Strategy")
+            local restart_line
+            restart_line=$(grep "^c Restart [0-9]" "$err_file" 2>/dev/null | tail -1 || true)
+            if [ -n "$restart_line" ]; then
+                local rs
+                rs=$(echo "$restart_line" | awk '{print $5}')
+                [ -n "$rs" ] && restart_strategy="\"$rs\""
+            fi
+
+            # Preprocessing summary
+            local preproc_line
+            preproc_line=$(grep "unit_prop=" "$err_file" 2>/dev/null || true)
+            if [ -n "$preproc_line" ]; then
+                # Extract non-zero techniques
+                local techniques=""
+                for tech in unit_prop pure_lit subsump self_sub bve probe; do
+                    local count
+                    count=$(echo "$preproc_line" | sed -n "s/.*${tech}=\([0-9]*\).*/\1/p")
+                    if [ -n "$count" ] && [ "$count" -gt 0 ]; then
+                        [ -n "$techniques" ] && techniques="${techniques},${tech}" || techniques="$tech"
+                    fi
+                done
+                if [ -n "$techniques" ]; then
+                    preprocessing="\"$techniques\""
+                else
+                    preprocessing="\"none_applied\""
+                fi
             fi
         fi
 
@@ -189,7 +245,13 @@ run_worker() {
     "method_used": $method_used,
     "strategy": $strategy,
     "zeta": $zeta,
-    "seed": $seed
+    "seed": $seed,
+    "peak_xl_max": $peak_xl_max,
+    "final_dt": $final_dt,
+    "solved_by": $solved_by,
+    "cdcl_handoffs": $cdcl_handoffs,
+    "restart_strategy": $restart_strategy,
+    "preprocessing": $preprocessing
   }
 }
 ENDJSON
