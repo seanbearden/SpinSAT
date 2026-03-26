@@ -463,6 +463,75 @@ def run_solver(solver_name, cnf_path, timeout):
         return {"error": f"Solver not found: {config['cmd']}"}
 
 
+def run_solver_with_args(cmd_list, cnf_path, timeout, parse_stderr=True):
+    """Run a solver with an explicit command list and return results.
+
+    Unlike run_solver() which looks up commands from the SOLVERS dict,
+    this accepts a pre-built argument list — used by Optuna tuning to
+    pass arbitrary parameter combinations.
+
+    Args:
+        cmd_list: List of strings, e.g. ["./spinsat", "--beta", "30", "--gamma", "0.1"]
+        cnf_path: Path to CNF instance file
+        timeout: Timeout in seconds
+        parse_stderr: If True, parse SpinSAT-specific stderr info
+    """
+    full_cmd = list(cmd_list) + [cnf_path]
+
+    num_vars, num_clauses = get_instance_info(cnf_path)
+    ratio = num_clauses / num_vars if num_vars > 0 else 0
+
+    start_wall = time.time()
+    start_rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
+    try:
+        result = subprocess.run(
+            full_cmd, capture_output=True, text=True,
+            timeout=timeout
+        )
+        wall_clock_s = round(time.time() - start_wall, 6)
+        end_rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        cpu_time_s = round(
+            (end_rusage.ru_utime - start_rusage.ru_utime)
+            + (end_rusage.ru_stime - start_rusage.ru_stime), 6
+        )
+
+        status, assignment = parse_solver_output(result.stdout, result.stderr)
+
+        stderr_info = {}
+        if parse_stderr:
+            stderr_info = parse_spinsat_stderr(result.stderr)
+
+        return {
+            "status": status,
+            "time_s": round(wall_clock_s, 4),
+            "wall_clock_s": wall_clock_s,
+            "cpu_time_s": cpu_time_s,
+            "num_vars": num_vars,
+            "num_clauses": num_clauses,
+            "ratio": round(ratio, 3),
+            **stderr_info,
+        }
+
+    except subprocess.TimeoutExpired:
+        wall_clock_s = round(time.time() - start_wall, 6)
+        end_rusage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        cpu_time_s = round(
+            (end_rusage.ru_utime - start_rusage.ru_utime)
+            + (end_rusage.ru_stime - start_rusage.ru_stime), 6
+        )
+        return {
+            "status": "TIMEOUT",
+            "time_s": round(wall_clock_s, 4),
+            "wall_clock_s": wall_clock_s,
+            "cpu_time_s": cpu_time_s,
+            "num_vars": num_vars,
+            "num_clauses": num_clauses,
+            "ratio": round(ratio, 3),
+        }
+    except FileNotFoundError:
+        return {"error": f"Solver not found: {full_cmd[0]}"}
+
+
 def collect_instances(suite_name=None, instance_patterns=None):
     """Collect CNF instances from a suite definition or glob patterns."""
     instances = []
