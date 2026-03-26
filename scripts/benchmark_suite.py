@@ -191,6 +191,16 @@ def parse_spinsat_stderr(stderr):
         "preprocessing": None,
         "cdcl_handoffs": 0,
         "solved_by": None,  # "dmm", "cadical", "preprocessing"
+        # ODE parameters (from "c ODE params:" stderr line)
+        "beta": None,
+        "gamma": None,
+        "delta": None,
+        "epsilon": None,
+        # Alpha cycling parameters (from "c Alpha params:" stderr line)
+        "alpha_initial": None,
+        "alpha_up_mult": None,
+        "alpha_down_mult": None,
+        "alpha_interval": None,
     }
 
     preprocess_techniques = []
@@ -272,6 +282,28 @@ def parse_spinsat_stderr(stderr):
         # "c CDCL proved UNSAT" (final fallback)
         if re.search(r"^c CDCL proved UNSAT", line):
             info["solved_by"] = "cadical"
+
+        # "c ODE params: beta=20, gamma=0.25, delta=0.05, epsilon=1e-3"
+        m = re.search(r"ODE params: beta=([^,]+), gamma=([^,]+), delta=([^,]+), epsilon=(\S+)", line)
+        if m:
+            try:
+                info["beta"] = float(m.group(1))
+                info["gamma"] = float(m.group(2))
+                info["delta"] = float(m.group(3))
+                info["epsilon"] = float(m.group(4))
+            except ValueError:
+                pass
+
+        # "c Alpha params: initial=5, up_mult=1.1, down_mult=0.9, interval=10000"
+        m = re.search(r"Alpha params: initial=([^,]+), up_mult=([^,]+), down_mult=([^,]+), interval=(\S+)", line)
+        if m:
+            try:
+                info["alpha_initial"] = float(m.group(1))
+                info["alpha_up_mult"] = float(m.group(2))
+                info["alpha_down_mult"] = float(m.group(3))
+                info["alpha_interval"] = float(m.group(4))
+            except ValueError:
+                pass
 
         # "c Preprocessing: 50 vars → 47, 215 clauses → 210 ..."
         if "Preprocessing:" in line:
@@ -622,8 +654,9 @@ def record_to_db(results, solver_name, run_metadata):
             (run_id, instance_hash, status, time_s, steps, restarts,
              verified, seed, zeta, alpha, beta, gamma, delta, epsilon,
              dt_min, dt_max, peak_xl_max, final_dt, wall_clock_s, cpu_time_s,
-             num_vars, num_clauses, cdcl_handoffs, solved_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             num_vars, num_clauses, cdcl_handoffs, solved_by,
+             alpha_initial, alpha_up_mult, alpha_down_mult, alpha_interval)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             run_id,
             instance_hash,
@@ -634,11 +667,11 @@ def record_to_db(results, solver_name, run_metadata):
             r.get("verified"),
             r.get("seed"),
             r.get("zeta"),
-            None,  # alpha (not yet exposed in stderr)
-            None,  # beta
-            None,  # gamma
-            None,  # delta
-            None,  # epsilon
+            r.get("alpha_initial"),
+            r.get("beta"),
+            r.get("gamma"),
+            r.get("delta"),
+            r.get("epsilon"),
             None,  # dt_min
             None,  # dt_max
             r.get("peak_xl_max"),
@@ -649,6 +682,10 @@ def record_to_db(results, solver_name, run_metadata):
             r.get("num_clauses"),
             r.get("cdcl_handoffs"),
             r.get("solved_by"),
+            r.get("alpha_initial"),
+            r.get("alpha_up_mult"),
+            r.get("alpha_down_mult"),
+            r.get("alpha_interval"),
         ))
         recorded += 1
 
