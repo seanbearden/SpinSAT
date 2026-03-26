@@ -1,0 +1,3 @@
+optuna>=3.0
+pyyaml
+plotly  # optional: for optuna visualization HTML exports

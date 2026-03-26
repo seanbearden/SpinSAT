@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+"""
+Optuna-based hyperparameter tuning for SpinSAT.
+
+Phase 1 MVP: local execution with SQLite storage, TPE sampler,
+SuccessiveHalving pruner, multi-seed PAR-2 objective.
+
+Usage:
+    python3 scripts/optuna_tune.py --campaign campaigns/smoke_test.yaml
+    python3 scripts/optuna_tune.py --campaign campaigns/smoke_test.yaml --dry-run
+    python3 scripts/optuna_tune.py --campaign campaigns/smoke_test.yaml --validate-best
+"""
+
+import argparse
+import os
+import sys
+import time
+from pathlib import Path
+
+import optuna
+
+# Add scripts/ to path for sibling imports
+SCRIPT_DIR = Path(__file__).parent
+PROJECT_ROOT = SCRIPT_DIR.parent
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from benchmark_suite import run_solver_with_args, detect_solver_version, detect_git_info
+from campaign_config import load_campaign, print_summary, CampaignConfig
+
+# Solver binary path
+SOLVER_CMD = str(PROJECT_ROOT / "target" / "release" / "spinsat")
+
+
+# ---------------------------------------------------------------------------
+# Parameter suggestion → CLI args mapping
+# ---------------------------------------------------------------------------
+
+def suggest_params(trial, search_space):
+    """Suggest parameters from Optuna trial based on search space config.
+
+    Returns a dict of parameter name → suggested value.
+    """
+    params = {}
+    for p in search_space:
+        # Check condition: skip this param if condition not met
+        if p.condition:
+            cond_key = list(p.condition.keys())[0]
+            cond_val = p.condition[cond_key]
+            if params.get(cond_key) != cond_val:
+                continue
+
+        if p.type == "float":
+            params[p.name] = trial.suggest_float(p.name, p.low, p.high, log=p.log)
+        elif p.type == "int":
+            params[p.name] = trial.suggest_int(p.name, int(p.low), int(p.high))
+        elif p.type == "categorical":
+            params[p.name] = trial.suggest_categorical(p.name, p.choices)
+
+    return params
+
+
+def build_solver_cmd(params, timeout, seed):
+    """Build solver command list from suggested parameters.
+
+    Returns list of strings suitable for run_solver_with_args().
+    """
+    cmd = [SOLVER_CMD, "-t", str(timeout), "-s", str(seed)]
+
+    # Parameter name → CLI flag mapping
+    flag_map = {
+        "beta": "--beta",
+        "gamma": "--gamma",
+        "delta": "--delta",
+        "epsilon": "--epsilon",
+        "alpha_initial": "--alpha-initial",
+        "alpha_up_mult": "--alpha-up-mult",
+        "alpha_down_mult": "--alpha-down-mult",
+        "alpha_interval": "--alpha-interval",
+        "zeta": "--zeta",
+        "xl_decay": "--xl-decay",
+        "restart_noise": "--restart-noise",
+    }
+
+    # Numeric params
+    for param_name, flag in flag_map.items():
+        if param_name in params:
+            cmd.extend([flag, str(params[param_name])])
+
+    # Zeta: disable auto-zeta when manually set
+    if "zeta" in params:
+        cmd.append("--no-auto-zeta")
+
+    # Strategy / method
+    strategy = params.get("strategy") or params.get("method")
+    if strategy:
+        cmd.extend(["--method", str(strategy)])
+
+    # Restart configuration
+    if params.get("no_restart") is True:
+        cmd.append("--no-restart")
+    elif "restart_mode" in params:
+        cmd.extend(["--restart-mode", str(params["restart_mode"])])
+
+    # Preprocessing
+    if params.get("preprocess") is False:
+        cmd.append("--no-preprocess")
+
+    # Auto-zeta
+    if params.get("auto_zeta") is False and "zeta" not in params:
+        cmd.append("--no-auto-zeta")
+
+    return cmd
+
+
+# ---------------------------------------------------------------------------
+# Objective function
+# ---------------------------------------------------------------------------
+
+def make_objective(config):
+    """Create the Optuna objective function closure."""
+
+    instances = config.resolved_instances
+    seeds = config.seeds
+    timeout = config.timeout_s
+
+    def objective(trial):
+        params = suggest_params(trial, config.search_space)
+        cmd = build_solver_cmd(params, timeout, seed=0)  # seed set per-run below
+
+        par2_total = 0.0
+        n_runs = 0
+
+        for i, instance in enumerate(instances):
+            for seed in seeds:
+                # Build per-run command with this seed
+                run_cmd = build_solver_cmd(params, timeout, seed)
+                result = run_solver_with_args(run_cmd, instance, timeout + 10)
+
+                if result.get("error"):
+                    raise optuna.TrialPruned(f"Solver error: {result['error']}")
+
+                if result["status"] == "SATISFIABLE":
+                    par2_total += result["time_s"]
+                elif result["status"] == "UNSATISFIABLE":
+                    # UNSAT scored by actual time, not penalized
+                    par2_total += result["time_s"]
+                else:
+                    # TIMEOUT or UNKNOWN: 2x penalty
+                    par2_total += 2 * timeout
+
+                n_runs += 1
+
+            # Report intermediate PAR-2 for pruning (after each instance, all seeds)
+            avg_so_far = par2_total / n_runs
+            trial.report(avg_so_far, step=i)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
+        return par2_total / n_runs
+
+    return objective
+
+
+# ---------------------------------------------------------------------------
+# Study creation
+# ---------------------------------------------------------------------------
+
+def create_sampler(config):
+    """Create Optuna sampler from campaign config."""
+    sc = config.sampler
+    if sc.type == "TPE":
+        return optuna.samplers.TPESampler(seed=sc.seed)
+    elif sc.type == "Random":
+        return optuna.samplers.RandomSampler(seed=sc.seed)
+    elif sc.type == "CmaEs":
+        return optuna.samplers.CmaEsSampler(seed=sc.seed)
+    elif sc.type == "Grid":
+        # Grid sampler needs explicit search space — not supported yet
+        raise ValueError("Grid sampler not yet supported in optuna_tune.py")
+    return optuna.samplers.TPESampler(seed=sc.seed)
+
+
+def create_pruner(config):
+    """Create Optuna pruner from campaign config."""
+    pc = config.pruner
+    if pc.type == "SuccessiveHalving":
+        return optuna.pruners.SuccessiveHalvingPruner(
+            min_resource=pc.min_resource,
+            reduction_factor=pc.reduction_factor,
+        )
+    elif pc.type == "Hyperband":
+        return optuna.pruners.HyperbandPruner(
+            min_resource=pc.min_resource,
+            reduction_factor=pc.reduction_factor,
+        )
+    elif pc.type == "Median":
+        return optuna.pruners.MedianPruner()
+    elif pc.type == "NopPruner":
+        return optuna.pruners.NopPruner()
+    return optuna.pruners.NopPruner()
+
+
+def create_study(config):
+    """Create or load an Optuna study."""
+    storage_path = config.storage.path
+    os.makedirs(os.path.dirname(storage_path) or ".", exist_ok=True)
+    storage_url = f"sqlite:///{storage_path}"
+
+    study = optuna.create_study(
+        study_name=config.study_name,
+        storage=storage_url,
+        sampler=create_sampler(config),
+        pruner=create_pruner(config),
+        direction=config.direction,
+        load_if_exists=True,
+    )
+    return study
+
+
+# ---------------------------------------------------------------------------
+# Progress callback
+# ---------------------------------------------------------------------------
+
+class ProgressCallback:
+    """Log trial results as they complete."""
+
+    def __init__(self, config):
+        self.config = config
+        self.start_time = time.time()
+
+    def __call__(self, study, trial):
+        elapsed = time.time() - self.start_time
+        n_complete = len([t for t in study.trials
+                         if t.state == optuna.trial.TrialState.COMPLETE])
+        n_pruned = len([t for t in study.trials
+                        if t.state == optuna.trial.TrialState.PRUNED])
+        total = self.config.n_trials
+
+        best_val = study.best_value if study.best_trial else float("inf")
+
+        status = "PRUNED" if trial.state == optuna.trial.TrialState.PRUNED else "COMPLETE"
+        val_str = f"{trial.value:.2f}" if trial.value is not None else "N/A"
+
+        # Estimate remaining time
+        if n_complete + n_pruned > 0:
+            avg_time = elapsed / (n_complete + n_pruned)
+            remaining = avg_time * (total - n_complete - n_pruned)
+            eta_str = f"{remaining / 60:.0f}m"
+        else:
+            eta_str = "?"
+
+        print(
+            f"[Trial {n_complete + n_pruned:03d}/{total}] "
+            f"PAR-2={val_str} ({status}) | "
+            f"Best: {best_val:.2f} | "
+            f"ETA: {eta_str}",
+            file=sys.stderr,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dry run
+# ---------------------------------------------------------------------------
+
+def dry_run(config):
+    """Print campaign summary and validate solver availability."""
+    print("=== DRY RUN ===\n")
+    print_summary(config)
+
+    # Check solver binary
+    if not Path(SOLVER_CMD).exists():
+        print(f"\n✗ Solver not found: {SOLVER_CMD}", file=sys.stderr)
+        print("  Run: cargo build --release", file=sys.stderr)
+        return False
+
+    # Check solver version
+    try:
+        version = detect_solver_version(SOLVER_CMD)
+        git_info = detect_git_info()
+        print(f"\nSolver: {SOLVER_CMD}")
+        print(f"  Version: {version}")
+        print(f"  Git: {git_info.get('commit', 'unknown')}"
+              f"{' (dirty)' if git_info.get('dirty') else ''}")
+    except Exception as e:
+        print(f"\n⚠ Could not detect solver version: {e}", file=sys.stderr)
+
+    # Print sample trial command
+    print("\nSample trial command:")
+    sample_params = {}
+    for p in config.search_space:
+        if p.condition:
+            continue  # skip conditional for sample
+        if p.type == "float":
+            sample_params[p.name] = (p.low + p.high) / 2
+        elif p.type == "categorical":
+            sample_params[p.name] = p.choices[0]
+    cmd = build_solver_cmd(sample_params, config.timeout_s, seed=42)
+    instance = config.resolved_instances[0] if config.resolved_instances else "<instance.cnf>"
+    print(f"  {' '.join(cmd)} {instance}")
+
+    print(f"\n✓ Dry run complete. Ready to execute.")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Validate best
+# ---------------------------------------------------------------------------
+
+def validate_best(config, study):
+    """Run the best trial configuration with full timeout and all seeds."""
+    if not study.best_trial:
+        print("No completed trials found.", file=sys.stderr)
+        return
+
+    best = study.best_trial
+    print(f"\n=== VALIDATING BEST TRIAL #{best.number} (PAR-2={best.value:.2f}) ===\n")
+    print("Best parameters:")
+    for k, v in sorted(best.params.items()):
+        print(f"  {k}: {v}")
+
+    val_config = config.validation
+    timeout = val_config.timeout_s if val_config else 5000
+    seeds = val_config.seeds if val_config else config.seeds
+
+    cmd = build_solver_cmd(best.params, timeout, seed=0)
+    print(f"\nRunning on {len(config.resolved_instances)} instances "
+          f"× {len(seeds)} seeds × {timeout}s timeout...")
+
+    results = []
+    for instance in config.resolved_instances:
+        for seed in seeds:
+            run_cmd = build_solver_cmd(best.params, timeout, seed)
+            result = run_solver_with_args(run_cmd, instance, timeout + 10)
+            result["instance"] = instance
+            result["seed"] = seed
+            results.append(result)
+
+    # Compute PAR-2
+    par2_total = 0.0
+    solved = 0
+    for r in results:
+        if r["status"] in ("SATISFIABLE", "UNSATISFIABLE"):
+            par2_total += r["time_s"]
+            solved += 1
+        else:
+            par2_total += 2 * timeout
+
+    avg_par2 = par2_total / len(results) if results else 0
+    print(f"\nValidation PAR-2: {avg_par2:.2f}")
+    print(f"Solved: {solved}/{len(results)} "
+          f"({100 * solved / len(results):.1f}%)")
+
+    # Print command for recording to benchmarks.db
+    print(f"\nTo record these results to benchmarks.db:")
+    param_args = []
+    for k, v in sorted(best.params.items()):
+        flag = {
+            "beta": "--beta", "gamma": "--gamma", "delta": "--delta",
+            "epsilon": "--epsilon", "alpha_initial": "--alpha-initial",
+            "alpha_up_mult": "--alpha-up-mult", "alpha_down_mult": "--alpha-down-mult",
+            "alpha_interval": "--alpha-interval", "zeta": "--zeta",
+            "xl_decay": "--xl-decay", "restart_noise": "--restart-noise",
+        }.get(k)
+        if flag:
+            param_args.extend([flag, str(v)])
+    print(f"  (Use benchmark_suite.py --record with the solver args above)")
+
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+
+def print_report(study, config):
+    """Print study results summary."""
+    trials = [t for t in study.trials
+              if t.state == optuna.trial.TrialState.COMPLETE]
+    pruned = [t for t in study.trials
+              if t.state == optuna.trial.TrialState.PRUNED]
+
+    print(f"\n=== STUDY RESULTS: {config.study_name} ===")
+    print(f"Completed: {len(trials)}, Pruned: {len(pruned)}, "
+          f"Total: {len(trials) + len(pruned)}/{config.n_trials}")
+
+    if not trials:
+        print("No completed trials.")
+        return
+
+    best = study.best_trial
+    print(f"\nBest trial #{best.number}: PAR-2 = {best.value:.2f}")
+    for k, v in sorted(best.params.items()):
+        if isinstance(v, float):
+            print(f"  {k}: {v:.6g}")
+        else:
+            print(f"  {k}: {v}")
+
+    # Parameter importance (if enough trials)
+    if len(trials) >= 5:
+        try:
+            importances = optuna.importance.get_param_importances(study)
+            print("\nParameter importance (fANOVA):")
+            for name, imp in sorted(importances.items(),
+                                     key=lambda x: -x[1]):
+                bar = "█" * int(imp * 40)
+                print(f"  {name:20s} {imp:.3f} {bar}")
+        except Exception:
+            pass  # fANOVA can fail with too few trials
+
+    # Save visualizations
+    study_dir = Path(config.storage.path).parent / config.study_name
+    study_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        fig = optuna.visualization.plot_optimization_history(study)
+        fig.write_html(str(study_dir / "optimization_history.html"))
+        fig = optuna.visualization.plot_param_importances(study)
+        fig.write_html(str(study_dir / "param_importances.html"))
+        fig = optuna.visualization.plot_parallel_coordinate(study)
+        fig.write_html(str(study_dir / "parallel_coordinate.html"))
+        print(f"\nVisualizations saved to: {study_dir}/")
+    except Exception as e:
+        print(f"\n(Visualizations skipped: {e})", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Optuna hyperparameter tuning for SpinSAT"
+    )
+    parser.add_argument("--campaign", required=True,
+                        help="Path to campaign YAML file")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Validate config and print plan without executing")
+    parser.add_argument("--validate-best", action="store_true",
+                        help="Run best trial with full timeout and record results")
+    parser.add_argument("--n-trials", type=int,
+                        help="Override number of trials from YAML")
+    parser.add_argument("--timeout", type=int,
+                        help="Override per-instance timeout from YAML")
+    args = parser.parse_args()
+
+    # Load campaign
+    try:
+        config = load_campaign(args.campaign)
+    except Exception as e:
+        print(f"Error loading campaign: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Apply overrides
+    if args.n_trials:
+        config.n_trials = args.n_trials
+    if args.timeout:
+        config.timeout_s = args.timeout
+
+    # Dry run
+    if args.dry_run:
+        ok = dry_run(config)
+        sys.exit(0 if ok else 1)
+
+    # Check instances
+    if not config.resolved_instances:
+        print("Error: No instances matched patterns. Check your campaign YAML.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    # Create study
+    study = create_study(config)
+    n_existing = len(study.trials)
+    if n_existing > 0:
+        print(f"Resuming study '{config.study_name}' with {n_existing} existing trials.",
+              file=sys.stderr)
+
+    # Validate best mode
+    if args.validate_best:
+        validate_best(config, study)
+        sys.exit(0)
+
+    # Run optimization
+    n_remaining = config.n_trials - n_existing
+    if n_remaining <= 0:
+        print(f"Study already has {n_existing} trials (budget: {config.n_trials}). "
+              f"Use --validate-best to evaluate the best config.", file=sys.stderr)
+    else:
+        print(f"\nStarting optimization: {n_remaining} trials on "
+              f"{len(config.resolved_instances)} instances × "
+              f"{len(config.seeds)} seeds × {config.timeout_s}s timeout",
+              file=sys.stderr)
+
+        objective = make_objective(config)
+        callback = ProgressCallback(config)
+
+        study.optimize(
+            objective,
+            n_trials=n_remaining,
+            callbacks=[callback],
+            show_progress_bar=False,
+        )
+
+    # Print report
+    print_report(study, config)
+
+
+if __name__ == "__main__":
+    main()
