@@ -1,0 +1,27 @@
+## Smoke test campaign — validates Phase 1 end-to-end (~30 min on 8-core)
+study_name: "smoke-test"
+
+objective:
+  metric: par2
+  direction: minimize
+  seeds: [42, 137, 271]
+  timeout_s: 60
+
+instances:
+  patterns: ["tests/*.cnf"]
+  max_instances: 10
+
+search_space:
+  beta: {type: float, low: 10, high: 40}
+  strategy: {type: categorical, choices: [euler, rk4]}
+
+budget:
+  n_trials: 5
+  max_wall_hours: 1
+
+sampler: {type: TPE, seed: 42}
+pruner: {type: SuccessiveHalving, min_resource: 1, reduction_factor: 3}
+
+storage:
+  type: sqlite
+  path: "optuna_studies/smoke.db"
