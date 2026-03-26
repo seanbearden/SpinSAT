@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3](https://github.com/seanbearden/SpinSAT/compare/v0.5.2...v0.5.3) - 2026-03-26
+
+### Added
+
+- core Optuna tuning loop with TPE, pruning, multi-seed PAR-2 (ss-3qr)
+- add run_solver_with_args() for Optuna arbitrary CLI params (ss-pkl)
+- parse ODE and alpha params from solver stderr and record to DB
+- add CLI flags for all ODE parameters (--beta, --gamma, --delta, --epsilon, --alpha-initial, --alpha-up-mult, --alpha-down-mult, --alpha-interval)
+- campaign YAML parser and validator (scripts/campaign_config.py)
+- idempotent benchmarks.db schema migration for Optuna columns
+- pass solver args through cloud benchmark path
+
+### Fixed
+
+- emit restart_mode in solver config line for benchmark recording
+- solver-args uses single string to avoid argparse flag collision
+
+### Other
+
+- apply alignment/review fixes to design doc (ss-mol-25sb)
+- design document for Optuna experiment framework (ss-mol-25sb)
+- PRD review findings and human clarifications (ss-mol-25sb)
+- draft PRD for Optuna experiment framework (ss-mol-25sb)
+- document musl binary rebuild requirement for cloud benchmarks
+
 ## [0.5.2](https://github.com/seanbearden/SpinSAT/compare/v0.5.1...v0.5.2) - 2026-03-25
 
 ### Added
