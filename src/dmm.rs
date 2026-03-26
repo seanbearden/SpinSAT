@@ -1,7 +1,6 @@
 use crate::formula::Formula;
 
 /// DMM solver parameters (paper defaults).
-/// Note: alpha is not stored here — per-clause alpha_m is in DmmState.
 pub struct Params {
     pub beta: f64,
     pub gamma: f64,
@@ -10,6 +9,14 @@ pub struct Params {
     pub zeta: f64,
     pub dt_max: f64,
     pub dt_min: f64,
+    /// Initial value for per-clause alpha_m (paper default: 5.0)
+    pub alpha_initial: f64,
+    /// Multiplier when x_l > median (paper default: 1.1)
+    pub alpha_up: f64,
+    /// Multiplier when x_l <= median (paper default: 0.9)
+    pub alpha_down: f64,
+    /// Integration time between alpha_m adjustments (paper default: 1e4)
+    pub alpha_interval: f64,
 }
 
 impl Default for Params {
@@ -22,6 +29,10 @@ impl Default for Params {
             zeta: 1e-1,
             dt_max: 1024.0,      // 2^10
             dt_min: 1.0 / 128.0, // 2^-7
+            alpha_initial: 5.0,
+            alpha_up: 1.1,
+            alpha_down: 0.9,
+            alpha_interval: 1e4,
         }
     }
 }
@@ -69,7 +80,7 @@ pub struct DmmState {
 
 impl DmmState {
     /// Initialize with random voltages and default memory values.
-    pub fn new(formula: &Formula, seed: u64) -> Self {
+    pub fn new(formula: &Formula, seed: u64, params: &Params) -> Self {
         let n = formula.num_vars;
         let m = formula.num_clauses();
 
@@ -77,7 +88,7 @@ impl DmmState {
         let x_s: Vec<f64> = vec![0.0; m];
         let x_l: Vec<f64> = vec![1.0; m];
         let max_xl = 1e4 * (m as f64);
-        let alpha_m = vec![5.0; m]; // initially = α = 5
+        let alpha_m = vec![params.alpha_initial; m];
 
         DmmState {
             v,
@@ -201,6 +212,7 @@ impl DmmState {
         &mut self,
         formula: &Formula,
         voltages_from_cdcl: &[f64],
+        params: &Params,
     ) {
         let m = formula.num_clauses();
 
@@ -220,7 +232,7 @@ impl DmmState {
             self.x_l.push(1.0);
         }
         while self.alpha_m.len() < m {
-            self.alpha_m.push(5.0);
+            self.alpha_m.push(params.alpha_initial);
         }
 
         // Update max_xl for new clause count
@@ -233,8 +245,8 @@ impl DmmState {
     }
 
     /// Per-clause α_m adjustment heuristic (paper Supplementary II.E).
-    /// Called every 10⁴ time units.
-    pub fn adjust_alpha_m(&mut self) {
+    /// Called every `params.alpha_interval` time units.
+    pub fn adjust_alpha_m(&mut self, params: &Params) {
         let m = self.x_l.len();
         if m == 0 {
             return;
@@ -247,9 +259,9 @@ impl DmmState {
 
         for i in 0..m {
             if self.x_l[i] > median {
-                self.alpha_m[i] *= 1.1;
+                self.alpha_m[i] *= params.alpha_up;
             } else {
-                self.alpha_m[i] *= 0.9;
+                self.alpha_m[i] *= params.alpha_down;
             }
             // Clamp α_m ≥ 1
             if self.alpha_m[i] < 1.0 {
@@ -422,11 +434,11 @@ mod tests {
     #[test]
     fn test_adjust_alpha_m() {
         let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3], vec![1, 2, 3]]);
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &Params::default());
         state.x_l[0] = 100.0;
         state.x_l[1] = 1.0;
         state.x_l[2] = 2.0;
-        state.adjust_alpha_m();
+        state.adjust_alpha_m(&Params::default());
         assert!(state.alpha_m[0] > 5.0, "alpha_m[0]={}", state.alpha_m[0]);
         assert!(state.alpha_m[1] < 5.0, "alpha_m[1]={}", state.alpha_m[1]);
     }
@@ -434,9 +446,9 @@ mod tests {
     #[test]
     fn test_adjust_alpha_m_xl_at_max_resets() {
         let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3], vec![1, 2, 3]]);
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &Params::default());
         state.x_l[0] = state.max_xl; // at max
-        state.adjust_alpha_m();
+        state.adjust_alpha_m(&Params::default());
         assert_eq!(state.x_l[0], 1.0, "x_l should reset to 1");
         assert_eq!(state.alpha_m[0], 1.0, "alpha_m should reset to 1");
     }
@@ -444,7 +456,7 @@ mod tests {
     #[test]
     fn test_init_short_memory() {
         let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3]]);
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &Params::default());
         state.init_short_memory(&f);
         for &xs in &state.x_s {
             assert!(xs >= 0.0 && xs <= 1.0, "x_s={} out of range", xs);
@@ -454,7 +466,7 @@ mod tests {
     #[test]
     fn test_restart_preserves_alpha_m() {
         let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3]]);
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &Params::default());
         state.alpha_m[0] = 10.0;
         state.alpha_m[1] = 0.5;
         state.restart(&f, 99);
@@ -497,7 +509,7 @@ mod tests {
     fn test_compute_derivatives_basic() {
         let f = Formula::new(3, vec![vec![1, -2, 3]]);
         let params = Params::default();
-        let state = DmmState::new(&f, 42);
+        let state = DmmState::new(&f, 42, &Params::default());
         let mut derivs = Derivatives::new(f.num_vars, f.num_clauses());
         compute_derivatives(&f, &state, &params, &mut derivs);
         // C_m should be computed
@@ -517,11 +529,11 @@ mod tests {
     #[test]
     fn test_restart_with_feedback_voltage_seeding() {
         let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3]]);
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &Params::default());
 
         // Simulate CaDiCaL returning phases
         let cdcl_voltages = vec![1.0, -1.0, 1.0];
-        state.restart_with_feedback(&f, &cdcl_voltages);
+        state.restart_with_feedback(&f, &cdcl_voltages, &Params::default());
 
         // Voltages should be scaled (0.9x) from CaDiCaL's phases
         assert!((state.v[0] - 0.9).abs() < 1e-10);
@@ -534,7 +546,7 @@ mod tests {
     #[test]
     fn test_restart_with_feedback_extends_memory_for_new_clauses() {
         let mut f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3]]);
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &Params::default());
         assert_eq!(state.x_s.len(), 2);
         assert_eq!(state.x_l.len(), 2);
         assert_eq!(state.alpha_m.len(), 2);
@@ -545,7 +557,7 @@ mod tests {
 
         // Restart with feedback should extend memory arrays
         let cdcl_voltages = vec![1.0, -1.0, 1.0];
-        state.restart_with_feedback(&f, &cdcl_voltages);
+        state.restart_with_feedback(&f, &cdcl_voltages, &Params::default());
 
         assert_eq!(state.x_s.len(), 3, "x_s should extend for new clause");
         assert_eq!(state.x_l.len(), 3, "x_l should extend for new clause");

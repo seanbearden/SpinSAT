@@ -398,7 +398,7 @@ fn try_cdcl_handoff(
 /// Main solve loop with restarts and strategy-based method selection.
 pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> SolveResult {
     let start = Instant::now();
-    let mut state = DmmState::new(formula, config.initial_seed);
+    let mut state = DmmState::new(formula, config.initial_seed, params);
     state.init_short_memory(formula);
     let mut derivs = Derivatives::new(formula.num_vars, formula.num_clauses());
 
@@ -593,9 +593,9 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
             // Smart restart: use CaDiCaL's phases as initial voltages if available,
             // otherwise fall back to the DMM's best voltages
             if let Some(ref cdcl_voltages) = feedback.voltages {
-                state.restart_with_feedback(formula, cdcl_voltages);
+                state.restart_with_feedback(formula, cdcl_voltages, params);
             } else {
-                state.restart_with_feedback(formula, &best_voltages);
+                state.restart_with_feedback(formula, &best_voltages, params);
             }
 
             // Reallocate derivatives and scratch for potentially larger formula
@@ -687,9 +687,9 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
                 }
                 if num_fixed > 0 || feedback.voltages.is_some() {
                     if let Some(ref cdcl_voltages) = feedback.voltages {
-                        state.restart_with_feedback(formula, cdcl_voltages);
+                        state.restart_with_feedback(formula, cdcl_voltages, params);
                     } else {
-                        state.restart_with_feedback(formula, &best_voltages);
+                        state.restart_with_feedback(formula, &best_voltages, params);
                     }
                     derivs = Derivatives::new(formula.num_vars, formula.num_clauses());
                     let needs_scratch = !matches!(config.strategy, Strategy::Fixed(Method::Euler));

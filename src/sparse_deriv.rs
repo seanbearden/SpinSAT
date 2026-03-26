@@ -322,7 +322,7 @@ mod tests {
     /// Compare sparse engine output against the loop-based champion.
     fn assert_derivatives_match(formula: &Formula, seed: u64) {
         let params = Params::default();
-        let mut state = DmmState::new(formula, seed);
+        let mut state = DmmState::new(formula, seed, &params);
         state.init_short_memory(formula);
 
         // Champion: loop-based
@@ -488,7 +488,7 @@ mod tests {
         // Run both engines for multiple steps and verify they stay in sync
         let f = Formula::new(5, vec![vec![1, -2, 3], vec![-1, 4, -5], vec![2, -3, 5]]);
         let params = Params::default();
-        let mut state_loop = DmmState::new(&f, 42);
+        let mut state_loop = DmmState::new(&f, 42, &params);
         state_loop.init_short_memory(&f);
         let mut state_sparse = state_loop.clone();
 

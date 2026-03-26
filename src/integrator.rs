@@ -65,10 +65,10 @@ fn adaptive_dt(dv: &[f64], params: &Params) -> f64 {
 }
 
 /// Post-step bookkeeping: track time and check α_m adjustment.
-fn post_step(state: &mut DmmState, dt: f64) {
+fn post_step(state: &mut DmmState, params: &Params, dt: f64) {
     state.t += dt;
-    if state.t - state.last_alpha_adjust_t >= 1e4 {
-        state.adjust_alpha_m();
+    if state.t - state.last_alpha_adjust_t >= params.alpha_interval {
+        state.adjust_alpha_m(params);
     }
 }
 
@@ -204,7 +204,7 @@ pub fn euler_step(
         state.v[i] = (state.v[i] + derivs.dv[i] * actual_dt).clamp(-1.0, 1.0);
     }
 
-    post_step(state, actual_dt);
+    post_step(state, params, actual_dt);
     actual_dt
 }
 
@@ -258,7 +258,7 @@ fn trapezoid_step(
     // Use stage 2 c_m for solution checking
     derivs.c_m.copy_from_slice(&d2.c_m);
 
-    post_step(state, actual_dt);
+    post_step(state, params, actual_dt);
     actual_dt
 }
 
@@ -318,7 +318,7 @@ fn rk4_step(
 
     derivs.c_m.copy_from_slice(&d4.c_m);
 
-    post_step(state, actual_dt);
+    post_step(state, params, actual_dt);
     actual_dt
 }
 
@@ -351,7 +351,7 @@ fn euler_step_with_engine(
     for i in 0..n {
         state.v[i] = (state.v[i] + derivs.dv[i] * actual_dt).clamp(-1.0, 1.0);
     }
-    post_step(state, actual_dt);
+    post_step(state, params, actual_dt);
     actual_dt
 }
 
@@ -391,7 +391,7 @@ fn trapezoid_step_with_engine(
         state.v[i] = (state.v[i] + half_dt * (derivs.dv[i] + d2.dv[i])).clamp(-1.0, 1.0);
     }
     derivs.c_m.copy_from_slice(&d2.c_m);
-    post_step(state, actual_dt);
+    post_step(state, params, actual_dt);
     actual_dt
 }
 
@@ -443,7 +443,7 @@ fn rk4_step_with_engine(
         state.v[i] = (state.v[i] + dt_sixth * dx).clamp(-1.0, 1.0);
     }
     derivs.c_m.copy_from_slice(&d4.c_m);
-    post_step(state, actual_dt);
+    post_step(state, params, actual_dt);
     actual_dt
 }
 
@@ -472,7 +472,7 @@ mod tests {
     fn test_euler_step() {
         let f = test_formula();
         let params = Params::default();
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &params);
         state.init_short_memory(&f);
         let mut derivs = Derivatives::new(f.num_vars, f.num_clauses());
         let mut scratch = ScratchBuffers::empty();
@@ -495,7 +495,7 @@ mod tests {
     fn test_trapezoid_step() {
         let f = test_formula();
         let params = Params::default();
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &params);
         state.init_short_memory(&f);
         let mut derivs = Derivatives::new(f.num_vars, f.num_clauses());
         let mut scratch = ScratchBuffers::new(&f, &state);
@@ -518,7 +518,7 @@ mod tests {
     fn test_rk4_step() {
         let f = test_formula();
         let params = Params::default();
-        let mut state = DmmState::new(&f, 42);
+        let mut state = DmmState::new(&f, 42, &params);
         state.init_short_memory(&f);
         let mut derivs = Derivatives::new(f.num_vars, f.num_clauses());
         let mut scratch = ScratchBuffers::new(&f, &state);

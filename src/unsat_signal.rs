@@ -255,8 +255,9 @@ mod tests {
     use crate::formula::Formula;
 
     fn make_formula_and_state() -> (Formula, DmmState) {
+        use crate::dmm::Params;
         let f = Formula::new(3, vec![vec![1, -2, 3], vec![-1, 2, -3], vec![1, 2, 3]]);
-        let state = DmmState::new(&f, 42);
+        let state = DmmState::new(&f, 42, &Params::default());
         (f, state)
     }
 

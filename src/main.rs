@@ -24,6 +24,14 @@ fn main() {
     let mut restart_noise: f64 = 0.05;
     let mut xl_decay: f64 = 0.5;
     let mut use_sparse_engine = false;
+    let mut cli_beta: Option<f64> = None;
+    let mut cli_gamma: Option<f64> = None;
+    let mut cli_delta: Option<f64> = None;
+    let mut cli_epsilon: Option<f64> = None;
+    let mut cli_alpha_initial: Option<f64> = None;
+    let mut cli_alpha_up: Option<f64> = None;
+    let mut cli_alpha_down: Option<f64> = None;
+    let mut cli_alpha_interval: Option<f64> = None;
     #[cfg(feature = "trace")]
     let mut trace_mode: Option<String> = None;
     #[cfg(feature = "trace")]
@@ -103,6 +111,38 @@ fn main() {
                 i += 1;
                 xl_decay = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(0.3);
             }
+            "--beta" => {
+                i += 1;
+                cli_beta = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--gamma" => {
+                i += 1;
+                cli_gamma = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--delta" => {
+                i += 1;
+                cli_delta = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--epsilon" => {
+                i += 1;
+                cli_epsilon = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--alpha-initial" => {
+                i += 1;
+                cli_alpha_initial = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--alpha-up-mult" => {
+                i += 1;
+                cli_alpha_up = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--alpha-down-mult" => {
+                i += 1;
+                cli_alpha_down = args.get(i).and_then(|s| s.parse().ok());
+            }
+            "--alpha-interval" => {
+                i += 1;
+                cli_alpha_interval = args.get(i).and_then(|s| s.parse().ok());
+            }
             "--sparse-engine" => {
                 use_sparse_engine = true;
             }
@@ -149,6 +189,14 @@ fn main() {
                 eprintln!("      --restart-noise <v> Noise scale for warm/anti-phase restarts (default: 0.05)");
                 eprintln!("      --xl-decay <v>      x_l decay factor for warm restarts (default: 0.5)");
                 eprintln!("      --no-restart       Disable restarts (single continuous integration run)");
+                eprintln!("      --beta <val>       Short-term memory growth rate (default: 20)");
+                eprintln!("      --gamma <val>      Short-term memory threshold (default: 0.25)");
+                eprintln!("      --delta <val>      Long-term memory threshold (default: 0.05)");
+                eprintln!("      --epsilon <val>    Trapping rate (default: 1e-3)");
+                eprintln!("      --alpha-initial <v> Initial per-clause alpha_m (default: 5)");
+                eprintln!("      --alpha-up-mult <v> Alpha increase multiplier (default: 1.1)");
+                eprintln!("      --alpha-down-mult <v> Alpha decrease multiplier (default: 0.9)");
+                eprintln!("      --alpha-interval <v> Time between alpha adjustments (default: 1e4)");
                 eprintln!("      --sparse-engine    Use sparse matrix derivative engine (challenger)");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
@@ -240,6 +288,14 @@ fn main() {
 
     // Set parameters
     let mut params = Params::default();
+    if let Some(v) = cli_beta { params.beta = v; }
+    if let Some(v) = cli_gamma { params.gamma = v; }
+    if let Some(v) = cli_delta { params.delta = v; }
+    if let Some(v) = cli_epsilon { params.epsilon = v; }
+    if let Some(v) = cli_alpha_initial { params.alpha_initial = v; }
+    if let Some(v) = cli_alpha_up { params.alpha_up = v; }
+    if let Some(v) = cli_alpha_down { params.alpha_down = v; }
+    if let Some(v) = cli_alpha_interval { params.alpha_interval = v; }
     if auto_zeta {
         params = params.with_auto_zeta(ratio);
     }
@@ -250,6 +306,14 @@ fn main() {
     eprintln!(
         "c Parameters: strategy={:?}, restart_mode={:?}, zeta={:.0e}, seed={}",
         strategy, restart_mode, params.zeta, seed
+    );
+    eprintln!(
+        "c ODE params: beta={}, gamma={}, delta={}, epsilon={:.0e}",
+        params.beta, params.gamma, params.delta, params.epsilon
+    );
+    eprintln!(
+        "c Alpha params: initial={}, up_mult={}, down_mult={}, interval={}",
+        params.alpha_initial, params.alpha_up, params.alpha_down, params.alpha_interval
     );
 
     // Configure solver
