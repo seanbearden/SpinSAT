@@ -196,15 +196,18 @@ def parse_spinsat_stderr(stderr):
     preprocess_techniques = []
 
     for line in stderr.splitlines():
-        # "c Parameters: strategy=Fixed(Euler), zeta=1e-3, seed=1"
-        m = re.search(r"strategy=(\S+),\s*zeta=([^,]+),\s*seed=(\d+)", line)
+        # "c Parameters: strategy=Fixed(Euler), restart_mode=Cycling, zeta=1e-3, seed=1"
+        # Also handles legacy format without restart_mode
+        m = re.search(r"strategy=(\S+),\s*(?:restart_mode=(\S+),\s*)?zeta=([^,]+),\s*seed=(\d+)", line)
         if m:
             info["strategy"] = m.group(1)
+            if m.group(2) and not info.get("restart_strategy"):
+                info["restart_strategy"] = m.group(2)
             try:
-                info["zeta"] = float(m.group(2))
+                info["zeta"] = float(m.group(3))
             except ValueError:
                 pass
-            info["seed"] = int(m.group(3))
+            info["seed"] = int(m.group(4))
 
         # "c Solved after 3 restarts using Euler (elapsed: 1.2s)"
         m = re.search(r"Solved after (\d+) restarts using (\S+)", line)

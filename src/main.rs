@@ -248,8 +248,8 @@ fn main() {
     }
 
     eprintln!(
-        "c Parameters: strategy={:?}, zeta={:.0e}, seed={}",
-        strategy, params.zeta, seed
+        "c Parameters: strategy={:?}, restart_mode={:?}, zeta={:.0e}, seed={}",
+        strategy, restart_mode, params.zeta, seed
     );
 
     // Configure solver
