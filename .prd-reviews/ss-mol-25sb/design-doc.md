@@ -328,11 +328,75 @@ Coordinator (local or VM)
 
 ---
 
+## Review Findings Applied
+
+### Fixes from alignment/review rounds (steps 5-10)
+
+1. **Smoke test campaign**: Phase 1 local = ~520 wall-hours for full 200 trials — impractical to validate. Added a smoke test campaign (10 instances, 3 seeds, 5 trials) that completes in ~30 min on an 8-core machine.
+
+2. **Phase 0 verification**: Added explicit test commands and expected stderr format so Phase 0 can be verified before Phase 1 begins.
+
+3. **Dropped `--override` from MVP**: Generic dotted-path YAML override parser is scope creep. Edit the YAML or create a small variant instead.
+
+4. **`--report` deferred**: Optuna's built-in `optuna-dashboard` or Jupyter can serve this initially. Phase 1 MVP prints best trial to stdout. `--validate-best` kept (core workflow).
+
+5. **PAR-2 handles UNSATISFIABLE correctly**: UNSAT results scored by actual time, not penalized as timeout.
+
+6. **Migration script idempotent**: Check column existence via `PRAGMA table_info` before `ALTER TABLE`.
+
+7. **Conditional param unit tests**: Added test specification for `build_solver_cmd()` covering all branches.
+
+8. **Instance ordering for pruning**: Sort instances easy-to-hard (by median competition solve time) to improve SuccessiveHalving signal quality.
+
+9. **Cost target revision**: PRD's $50 covers tuning only. Validation costs extra (~$40). Total campaign budget revised to ~$75.
+
+10. **Competition reference data**: Added task to acquire SAT 2025 results (or use SAT 2022 overlap) before benchmarking.
+
+11. **Memory high-water mark**: Added to Phase 3 snapshot format via `getrusage` maxrss in Python wrapper.
+
+12. **DmmState::new() signature**: Phase 0 must thread `alpha_initial` from Params into `DmmState::new()`, updating call sites including ~7 test files.
+
+### Phase 0 Verification Criteria
+
+After completing Phase 0 Rust changes, verify with:
+```bash
+cargo build --release
+./target/release/spinsat --beta 30 --gamma 0.1 --alpha-initial 3.0 \
+  --alpha-up-mult 1.2 --alpha-down-mult 0.8 --alpha-interval 5000 \
+  -t 60 -s 1 tests/test1.cnf 2>&1 | grep -E "beta|gamma|alpha"
+```
+Expected stderr must emit all param values so `parse_spinsat_stderr()` can capture them.
+
+### Smoke Test Campaign
+
+```yaml
+# campaigns/smoke_test.yaml — validates Phase 1 end-to-end (~30 min)
+study_name: "smoke-test"
+objective: {metric: par2, direction: minimize, seeds: [42, 137, 271], timeout_s: 60}
+instances: {patterns: ["tests/*.cnf"], max_instances: 10}
+search_space:
+  beta: {type: float, low: 10, high: 40}
+  method: {type: categorical, choices: [euler, rk4]}
+budget: {n_trials: 5, max_wall_hours: 1}
+storage: {type: sqlite, path: "optuna_studies/smoke.db"}
+```
+
+### Unit Tests for build_solver_cmd()
+
+Required test cases:
+1. All params active (restart enabled, manual zeta, preprocessing on)
+2. `no_restart: true` — no `--restart-mode`, `--xl-decay`, `--restart-noise` in cmd
+3. `auto_zeta: true` — no `--zeta` or `--no-auto-zeta` in cmd
+4. `preprocess: false` — `--no-preprocess` present
+5. Verify UNSATISFIABLE instances scored by actual time (not 2x penalty)
+
+---
+
 ## Deprecation
 
 | Script | Status | Replacement |
 |--------|--------|-------------|
-| `tune_restart_params.py` | Deprecated Phase 1 | `optuna_tune.py` with GridSampler campaign |
+| `tune_restart_params.py` | Deprecated after Phase 1 validated | `optuna_tune.py` |
 
 ---
 
@@ -340,16 +404,19 @@ Coordinator (local or VM)
 
 ```
 Phase 0 (prerequisite):
-  1. src/dmm.rs: Add alpha params to Params struct
+  1. src/dmm.rs: Add alpha params to Params struct, update DmmState::new() signature
   2. src/main.rs: Add 8 CLI flags, thread to Params
-  3. src/integrator.rs: Parameterize alpha_interval
-  4. benchmark_suite.py: Update parse_spinsat_stderr + record_to_db
+  3. src/integrator.rs: Parameterize alpha_interval in post_step()
+  4. Update ~7 test call sites for new DmmState::new() signature
+  5. benchmark_suite.py: Update parse_spinsat_stderr + record_to_db
+  6. cargo build --release + verify stderr output (see verification criteria above)
 
 Phase 1 (MVP):
-  5. scripts/campaign_config.py: YAML parser
-  6. scripts/optuna_tune.py: Core tuning loop
-  7. scripts/migrate_benchmarks_db_optuna.py: Schema migration
-  8. campaigns/: Example YAMLs
-  9. benchmark_suite.py: Add extra_args to run_solver()
-  10. Deprecation notice on tune_restart_params.py
+  7. scripts/campaign_config.py: YAML parser (hardcode TPE + SuccessiveHalving)
+  8. scripts/optuna_tune.py: Core tuning loop + --dry-run + --validate-best
+  9. scripts/migrate_benchmarks_db_optuna.py: Idempotent schema migration
+  10. campaigns/smoke_test.yaml + campaigns/tune_ode_full.yaml
+  11. benchmark_suite.py: Add run_solver_with_args() (new function, not modify existing)
+  12. requirements-tune.txt: optuna>=3.0, pyyaml
+  13. Run smoke test campaign to validate end-to-end
 ```
