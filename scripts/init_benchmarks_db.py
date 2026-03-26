@@ -44,7 +44,9 @@ CREATE TABLE IF NOT EXISTS runs (
     cli_command TEXT,
     tag_purpose TEXT,
     tag_instance_set TEXT,
-    tag_config TEXT
+    tag_config TEXT,
+    optuna_study TEXT,
+    optuna_trial_number INTEGER
 );
 
 -- Per-instance results within a run
@@ -73,6 +75,15 @@ CREATE TABLE IF NOT EXISTS results (
     num_clauses INTEGER,
     cdcl_handoffs INTEGER,
     solved_by TEXT,
+    xl_decay REAL,
+    restart_noise REAL,
+    alpha_initial REAL,
+    alpha_up_mult REAL,
+    alpha_down_mult REAL,
+    alpha_interval REAL,
+    restart_mode TEXT,
+    strategy_used TEXT,
+    preprocess_enabled INTEGER,
     PRIMARY KEY (run_id, instance_hash)
 );
 
