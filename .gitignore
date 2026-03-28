@@ -26,3 +26,7 @@ infra/terraform/.build/
 infra/terraform/terraform.tfstate*
 infra/terraform/terraform.tfvars
 infra/terraform/*.auto.tfvars
+terraform/optuna/.terraform/
+terraform/optuna/.terraform.lock.hcl
+terraform/optuna/terraform.tfstate*
+terraform/optuna/terraform.tfvars
