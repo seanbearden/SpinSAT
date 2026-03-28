@@ -55,6 +55,7 @@ class PrunerConfig:
 class StorageConfig:
     type: str = "sqlite"
     path: str = ""
+    url: str = ""  # PostgreSQL connection URL (for type=postgresql)
 
 
 @dataclass
@@ -107,7 +108,7 @@ _VALID_METRICS = {"par2"}
 _VALID_DIRECTIONS = {"minimize", "maximize"}
 _VALID_SAMPLER_TYPES = {"TPE", "Random", "Grid", "CmaEs"}
 _VALID_PRUNER_TYPES = {"SuccessiveHalving", "Hyperband", "Median", "NopPruner"}
-_VALID_STORAGE_TYPES = {"sqlite"}
+_VALID_STORAGE_TYPES = {"sqlite", "postgresql"}
 
 # Known solver parameter names (validated but not enforced — unknown names
 # are allowed so the config stays forward-compatible with new solver flags).
@@ -318,6 +319,7 @@ def load_campaign(yaml_path: str, resolve_instances: bool = True) -> CampaignCon
     storage = StorageConfig(
         type=stor_raw.get("type", "sqlite"),
         path=stor_raw.get("path", f"optuna_studies/{study_name}.db"),
+        url=stor_raw.get("url", ""),
     )
     if storage.type not in _VALID_STORAGE_TYPES:
         raise CampaignError(
@@ -378,7 +380,17 @@ def print_summary(config: CampaignConfig) -> None:
     print(f"Pruner: {config.pruner.type} "
           f"(min_resource={config.pruner.min_resource}, "
           f"reduction_factor={config.pruner.reduction_factor})")
-    print(f"Storage: {config.storage.type} → {config.storage.path}")
+    if config.storage.type == "postgresql":
+        # Mask password in URL for display
+        url = config.storage.url
+        if "@" in url:
+            pre, post = url.split("@", 1)
+            if ":" in pre:
+                scheme_user = pre.rsplit(":", 1)[0]
+                url = f"{scheme_user}:***@{post}"
+        print(f"Storage: {config.storage.type} → {url}")
+    else:
+        print(f"Storage: {config.storage.type} → {config.storage.path}")
     if config.validation:
         print(f"Validation: {config.validation.timeout_s}s timeout, "
               f"seeds={config.validation.seeds}, "
