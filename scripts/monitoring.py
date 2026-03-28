@@ -176,9 +176,11 @@ class MetricsReporter:
                 },
             )
 
+            # Only use instance_name as metric label — VM labels are on
+            # the instance itself and don't need to be duplicated here.
+            # Extra labels would require updating the metric descriptor.
             metric_labels = {
                 "instance_name": self.instance_name,
-                **self.extra_labels,
             }
 
             # benchmark_active
