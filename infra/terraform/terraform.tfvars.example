@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and fill in your values.
+# terraform.tfvars is gitignored — never commit real email addresses.
+
+project = "spinsat"
+region  = "us-central1"
+zone    = "us-central1-a"
+
+notification_email   = "you@example.com"
+notification_email_2 = ""  # optional second recipient for idle-VM alerts
+
+cloud_sql_tier = "db-g1-small"
