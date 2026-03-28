@@ -1,5 +1,5 @@
 ## Full ODE parameter tuning campaign
-study_name: "tune-ode-v0.5.0"
+study_name: "tune-ode-v0.5.3"
 
 objective:
   metric: par2
@@ -8,7 +8,7 @@ objective:
   timeout_s: 300
 
 instances:
-  patterns: ["benchmarks/competition/sat2025/*.cnf"]
+  patterns: ["/Users/seanbearden/gt/spinsat/benchmarks/sat2025-tuning-sat50/*.cnf"]
   max_instances: 50
 
 search_space:
@@ -43,7 +43,7 @@ pruner: {type: SuccessiveHalving, min_resource: 5, reduction_factor: 3}
 
 storage:
   type: sqlite
-  path: "optuna_studies/tune-ode-v0.5.0.db"
+  path: "optuna_studies/tune-ode-v0.5.3.db"
 
 validation:
   timeout_s: 5000

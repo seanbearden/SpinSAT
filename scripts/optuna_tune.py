@@ -200,15 +200,43 @@ def create_pruner(config):
     return optuna.pruners.NopPruner()
 
 
-def create_study(config):
-    """Create or load an Optuna study."""
+def create_storage(config, db_url_override=None):
+    """Create Optuna storage backend.
+
+    For PostgreSQL: uses RDBStorage with heartbeat for crash resilience.
+    For SQLite: uses simple URL string (local only).
+    """
+    if db_url_override:
+        # CLI override — always treat as PostgreSQL
+        return optuna.storages.RDBStorage(
+            url=db_url_override,
+            heartbeat_interval=60,
+            grace_period=120,
+        )
+
+    if config.storage.type == "postgresql":
+        url = config.storage.url
+        if not url:
+            raise ValueError("storage.url required for postgresql storage type")
+        return optuna.storages.RDBStorage(
+            url=url,
+            heartbeat_interval=60,
+            grace_period=120,
+        )
+
+    # SQLite (default, local)
     storage_path = config.storage.path
     os.makedirs(os.path.dirname(storage_path) or ".", exist_ok=True)
-    storage_url = f"sqlite:///{storage_path}"
+    return f"sqlite:///{storage_path}"
+
+
+def create_study(config, db_url_override=None):
+    """Create or load an Optuna study."""
+    storage = create_storage(config, db_url_override)
 
     study = optuna.create_study(
         study_name=config.study_name,
-        storage=storage_url,
+        storage=storage,
         sampler=create_sampler(config),
         pruner=create_pruner(config),
         direction=config.direction,
@@ -276,11 +304,10 @@ def dry_run(config):
     # Check solver version
     try:
         version = detect_solver_version(SOLVER_CMD)
-        git_info = detect_git_info()
+        git_commit, git_dirty = detect_git_info()
         print(f"\nSolver: {SOLVER_CMD}")
         print(f"  Version: {version}")
-        print(f"  Git: {git_info.get('commit', 'unknown')}"
-              f"{' (dirty)' if git_info.get('dirty') else ''}")
+        print(f"  Git: {git_commit}{' (dirty)' if git_dirty else ''}")
     except Exception as e:
         print(f"\n⚠ Could not detect solver version: {e}", file=sys.stderr)
 
@@ -438,6 +465,37 @@ def main():
                         help="Override number of trials from YAML")
     parser.add_argument("--timeout", type=int,
                         help="Override per-instance timeout from YAML")
+    parser.add_argument("--db-url", type=str, default=None,
+                        help="PostgreSQL URL for distributed mode "
+                             "(overrides YAML storage config)")
+    parser.add_argument("--worker-id", type=str, default=None,
+                        help="Worker identifier for distributed logging")
+
+    # Cloud execution
+    cloud = parser.add_argument_group("cloud execution (GCP)")
+    cloud.add_argument("--cloud", action="store_true",
+                       help="Run distributed on GCP spot VMs")
+    cloud.add_argument("--cloud-workers", type=int, default=4,
+                       help="Number of spot VM workers (default: 4)")
+    cloud.add_argument("--cloud-zone", default="us-central1-a",
+                       help="GCP zone")
+    cloud.add_argument("--cloud-machine", default="c3-standard-4",
+                       help="GCP machine type (default: c3-standard-4)")
+    cloud.add_argument("--cloud-max-hours", type=int, default=12,
+                       help="Max VM lifetime in hours (default: 12)")
+    cloud.add_argument("--cloud-project", default="spinsat",
+                       help="GCP project ID")
+    cloud.add_argument("--cloud-bucket", default="spinsat-benchmarks",
+                       help="GCS bucket for instance files")
+    cloud.add_argument("--cloud-db-instance", default="spinsat-optuna",
+                       help="Cloud SQL instance name")
+    cloud.add_argument("--cloud-db-region", default="us-central1",
+                       help="Cloud SQL region")
+    cloud.add_argument("--cloud-status", action="store_true",
+                       help="Check status of running cloud study")
+    cloud.add_argument("--cloud-cleanup", action="store_true",
+                       help="Delete cloud resources (VMs, optionally Cloud SQL)")
+
     args = parser.parse_args()
 
     # Load campaign
@@ -464,11 +522,39 @@ def main():
               file=sys.stderr)
         sys.exit(1)
 
-    # Create study
-    study = create_study(config)
+    # Cloud mode — delegate to cloud orchestrator
+    if args.cloud:
+        from cloud_optuna import CloudOptuna
+        cloud = CloudOptuna(
+            campaign_path=args.campaign,
+            config=config,
+            n_workers=args.cloud_workers,
+            zone=args.cloud_zone,
+            machine_type=args.cloud_machine,
+            max_hours=args.cloud_max_hours,
+            project=args.cloud_project,
+            bucket=args.cloud_bucket,
+            db_instance=args.cloud_db_instance,
+            db_region=args.cloud_db_region,
+        )
+        if args.cloud_status:
+            cloud.status()
+        elif args.cloud_cleanup:
+            cloud.cleanup()
+        else:
+            cloud.run()
+        sys.exit(0)
+
+    if args.cloud_status or args.cloud_cleanup:
+        print("--cloud-status and --cloud-cleanup require --cloud", file=sys.stderr)
+        sys.exit(1)
+
+    # Create study (with optional DB URL override for distributed workers)
+    study = create_study(config, db_url_override=args.db_url)
     n_existing = len(study.trials)
+    worker_tag = f" (worker={args.worker_id})" if args.worker_id else ""
     if n_existing > 0:
-        print(f"Resuming study '{config.study_name}' with {n_existing} existing trials.",
+        print(f"Resuming study '{config.study_name}' with {n_existing} existing trials.{worker_tag}",
               file=sys.stderr)
 
     # Validate best mode
@@ -489,11 +575,19 @@ def main():
 
         objective = make_objective(config)
         callback = ProgressCallback(config)
+        callbacks = [callback]
+
+        # Add retry callback for distributed mode (handles preempted trials)
+        if args.db_url:
+            retry_cb = optuna.storages.RetryFailedTrialCallback(
+                max_retry=2,
+            )
+            callbacks.append(retry_cb)
 
         study.optimize(
             objective,
             n_trials=n_remaining,
-            callbacks=[callback],
+            callbacks=callbacks,
             show_progress_bar=False,
         )
 
