@@ -17,6 +17,9 @@ RESULTS_FILE="$5"
 shift 5
 SOLVER_ARGS=("$@")  # Extra args passed to solver (e.g., -m euler)
 
+# GCS results URI passed via environment variable
+GCS_RESULTS_URI="${GCS_RESULTS_URI:-}"
+
 # Fixed results directory (not mktemp) so recovery can find it
 RESULTS_DIR="/tmp/spinsat_results"
 PROGRESS_FILE="/tmp/spinsat_progress"
@@ -25,6 +28,16 @@ STATUS_FILE="/tmp/spinsat_status"
 mkdir -p "$RESULTS_DIR"
 echo "0" > "$PROGRESS_FILE"
 echo "running" > "$STATUS_FILE"
+
+# --- GCS upload helper ---
+upload_to_gcs() {
+    # Upload merged results and per-instance files to GCS
+    if [ -z "$GCS_RESULTS_URI" ]; then
+        return
+    fi
+    gsutil -q cp "$RESULTS_FILE" "$GCS_RESULTS_URI/results.json" 2>/dev/null || true
+    gsutil -q -m rsync "$RESULTS_DIR/" "$GCS_RESULTS_URI/per_instance/" 2>/dev/null || true
+}
 
 # --- Competition-faithful CPU setup ---
 setup_cpu() {
@@ -267,6 +280,9 @@ ENDJSON
         # Merge results incrementally (every instance)
         merge_results "$RESULTS_FILE"
 
+        # Upload to GCS after each instance (non-blocking)
+        upload_to_gcs &
+
         local short_status="???"
         case "$status" in
             SATISFIABLE)   short_status="SAT" ;;
@@ -296,6 +312,13 @@ echo "All workers finished."
 merge_results "$RESULTS_FILE"
 echo "completed" > "$STATUS_FILE"
 echo "Results written to $RESULTS_FILE ($TOTAL instances)"
+
+# Final GCS upload (blocking — ensure results are durable before exit)
+if [ -n "$GCS_RESULTS_URI" ]; then
+    echo "Uploading final results to $GCS_RESULTS_URI..."
+    upload_to_gcs
+    echo "GCS upload complete."
+fi
 
 # Cleanup temp files (keep results)
 rm -f /tmp/job_queue.txt /tmp/worker_queue_*.txt "$PROGRESS_FILE"

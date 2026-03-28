@@ -829,7 +829,9 @@ def cloud_run(args, instances, suite_name):
         max_hours=args.cloud_max_hours,
         parallelism=args.cloud_parallelism,
         bucket=args.cloud_bucket,
+        results_bucket=args.cloud_results_bucket,
         project=args.cloud_project,
+        actor=os.environ.get("BD_ACTOR"),
     )
 
     if args.dry_run:
@@ -855,12 +857,14 @@ def cloud_run(args, instances, suite_name):
         )
     except KeyboardInterrupt:
         print(f"\nInterrupted! Worker continues on VM: {cb.instance_name}")
+        print(f"  Results uploading to: {cb.gcs_results_uri}")
         print(f"  Recover results: python3 scripts/benchmark_suite.py --cloud-recover {cb.instance_name} --cloud-zone {cb.zone}")
         print(f"  Delete manually: gcloud compute instances delete {cb.instance_name} --zone {cb.zone} --project {cb.project}")
         return
     except Exception as e:
         print(f"\nError: {e}")
         print(f"  VM kept alive for recovery: {cb.instance_name}")
+        print(f"  Results uploading to: {cb.gcs_results_uri}")
         print(f"  Recover: python3 scripts/benchmark_suite.py --cloud-recover {cb.instance_name} --cloud-zone {cb.zone}")
         print(f"  Delete:  gcloud compute instances delete {cb.instance_name} --zone {cb.zone} --project {cb.project} --quiet")
         print(f"  NOTE: VM incurs cost until deleted! Auto-shutdown safety net: {cb.max_hours}h")
@@ -966,6 +970,8 @@ def main():
                        help="Parallel solver count — 8 mimics competition (default: 8)")
     cloud.add_argument("--cloud-bucket", default=None,
                        help="GCS bucket for CNF files (optional, speeds up repeated runs)")
+    cloud.add_argument("--cloud-results-bucket", default="spinsat-results",
+                       help="GCS bucket for results (default: spinsat-results)")
     cloud.add_argument("--cloud-project", default="spinsat",
                        help="GCP project ID (default: spinsat)")
     cloud.add_argument("--cloud-cleanup", action="store_true",
@@ -995,6 +1001,7 @@ def main():
         from cloud_benchmark import CloudBenchmark
         cb = CloudBenchmark(
             zone=args.cloud_zone,
+            results_bucket=args.cloud_results_bucket,
             project=args.cloud_project,
         )
         cb.instance_name = args.cloud_recover

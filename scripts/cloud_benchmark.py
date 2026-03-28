@@ -31,6 +31,7 @@ DEFAULT_IMAGE_PROJECT = "rocky-linux-cloud"
 DEFAULT_MAX_HOURS = 6
 DEFAULT_PARALLELISM = 8
 DEFAULT_BUCKET = "spinsat-benchmarks"
+DEFAULT_RESULTS_BUCKET = "spinsat-results"
 
 
 class CloudBenchmarkError(Exception):
@@ -48,7 +49,9 @@ class CloudBenchmark:
         max_hours=DEFAULT_MAX_HOURS,
         parallelism=DEFAULT_PARALLELISM,
         bucket=None,
+        results_bucket=DEFAULT_RESULTS_BUCKET,
         project=GCP_PROJECT,
+        actor=None,
     ):
         self.zone = zone
         self.machine_type = machine_type
@@ -56,11 +59,20 @@ class CloudBenchmark:
         self.max_hours = max_hours
         self.parallelism = parallelism
         self.bucket = bucket
+        self.results_bucket = results_bucket
         self.project = project
 
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         self.instance_name = f"spinsat-bench-{ts}"
         self._instance_created = False
+        self._run_id = ts
+
+        # Labels for monitoring and cost attribution
+        self._labels = {
+            "purpose": "benchmark",
+            "crew-member": (actor or "unknown").replace("/", "-"),
+            "run-id": ts,
+        }
 
     # ------------------------------------------------------------------
     # GCP helpers
@@ -156,6 +168,9 @@ class CloudBenchmark:
         print(f"  Spot: {self.spot}")
         print(f"  Max lifetime: {self.max_hours}h")
 
+        label_str = ",".join(f"{k}={v}" for k, v in self._labels.items())
+        gcs_results_uri = f"gs://{self.results_bucket}/runs/{self._run_id}"
+
         args = [
             "compute", "instances", "create", self.instance_name,
             "--zone", self.zone,
@@ -169,11 +184,12 @@ class CloudBenchmark:
             # regardless of startup script or SSH state
             "--max-run-duration", f"{self.max_hours * 3600}s",
             "--instance-termination-action", "STOP",
-            # Startup script shutdown as belt-and-suspenders backup
-            "--metadata", f"max_hours={self.max_hours}",
+            # Startup script: uploads results to GCS before shutdown
+            "--metadata", f"max_hours={self.max_hours},gcs_results_uri={gcs_results_uri}",
             "--metadata-from-file",
             f"startup-script={self._create_startup_script()}",
-            "--scopes", "storage-ro",
+            "--scopes", "storage-rw,monitoring.write",
+            "--labels", label_str,
         ]
 
         if self.spot:
@@ -187,13 +203,37 @@ class CloudBenchmark:
         self._wait_for_ssh()
 
     def _create_startup_script(self):
-        """Create a startup script that schedules auto-shutdown."""
+        """Create a startup script that uploads results to GCS before shutdown."""
+        gcs_results_uri = f"gs://{self.results_bucket}/runs/{self._run_id}"
         script = tempfile.NamedTemporaryFile(
             mode="w", suffix=".sh", delete=False, prefix="spinsat_startup_"
         )
         script.write(f"""#!/bin/bash
-# Auto-shutdown safety net: kill instance after {self.max_hours} hours
-shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
+# Upload results to GCS before safety shutdown
+upload_results_to_gcs() {{
+    local gcs_uri="{gcs_results_uri}"
+    if [ -f /tmp/results.json ]; then
+        gsutil -q cp /tmp/results.json "$gcs_uri/results.json" 2>/dev/null || true
+    fi
+    if [ -d /tmp/spinsat_results ]; then
+        gsutil -q -m rsync /tmp/spinsat_results/ "$gcs_uri/per_instance/" 2>/dev/null || true
+    fi
+}}
+
+# Upload on SIGTERM (GCP max-run-duration sends SIGTERM before STOP)
+trap 'upload_results_to_gcs; exit 0' SIGTERM
+
+# Auto-shutdown safety net: upload results then halt
+(
+    sleep {self.max_hours * 3600}
+    upload_results_to_gcs
+    shutdown -h now "SpinSAT benchmark safety timeout"
+) &
+
+# Install gsutil if not present (Rocky Linux)
+if ! command -v gsutil >/dev/null 2>&1; then
+    yum install -y google-cloud-cli 2>/dev/null || true
+fi
 """)
         script.close()
         return script.name
@@ -332,6 +372,11 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
         self._scp_to(CLOUD_WORKER, "/tmp/cloud_worker.sh")
         self._ssh("chmod +x /tmp/cloud_worker.sh")
 
+    @property
+    def gcs_results_uri(self):
+        """GCS URI for this run's results."""
+        return f"gs://{self.results_bucket}/runs/{self._run_id}"
+
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
@@ -355,8 +400,9 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
 
         # Launch worker detached via nohup so it survives SSH drops
         extra = " ".join(solver_args) if solver_args else ""
+        gcs_uri = self.gcs_results_uri
         launch_cmd = (
-            f"nohup sudo /tmp/cloud_worker.sh "
+            f"nohup sudo GCS_RESULTS_URI={gcs_uri} /tmp/cloud_worker.sh "
             f"/tmp/spinsat /tmp/instances {timeout} "
             f"{self.parallelism} /tmp/results.json {extra} "
             f"> /tmp/worker_stdout.log 2>&1 &"
@@ -472,13 +518,26 @@ shutdown -h +{self.max_hours * 60} "SpinSAT benchmark safety timeout"
         return self.download_results("/tmp/results.json", run_id, tag, timeout_s)
 
     def download_results(self, remote_path, run_id, tag, timeout_s):
-        """Download results from VM and format for benchmark_suite.py."""
+        """Download results from GCS (preferred) or VM via SCP (fallback)."""
         local_tmp = tempfile.NamedTemporaryFile(
             suffix=".json", delete=False, prefix="cloud_results_"
         )
         local_tmp.close()
 
-        self._scp_from(remote_path, local_tmp.name)
+        # Try GCS first — results survive VM deletion
+        gcs_path = f"{self.gcs_results_uri}/results.json"
+        try:
+            result = subprocess.run(
+                ["gsutil", "-q", "cp", gcs_path, local_tmp.name],
+                capture_output=True, text=True, timeout=60,
+            )
+            if result.returncode == 0 and os.path.getsize(local_tmp.name) > 2:
+                print(f"  Results downloaded from GCS: {gcs_path}")
+            else:
+                raise CloudBenchmarkError("GCS results empty or missing")
+        except (CloudBenchmarkError, subprocess.TimeoutExpired, FileNotFoundError):
+            print(f"  GCS download failed, falling back to SCP...")
+            self._scp_from(remote_path, local_tmp.name)
 
         with open(local_tmp.name) as f:
             raw_instances = json.load(f)
