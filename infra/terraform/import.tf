@@ -36,7 +36,7 @@ import {
 
 import {
   to = google_sql_user.optuna
-  id = "projects/spinsat/instances/spinsat-optuna/users/optuna"
+  id = "spinsat/spinsat-optuna/optuna"
 }
 
 import {
