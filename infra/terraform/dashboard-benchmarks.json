@@ -1,0 +1,252 @@
+{
+  "displayName": "SpinSAT Benchmarks",
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "xPos": 0,
+        "yPos": 0,
+        "width": 4,
+        "height": 4,
+        "widget": {
+          "title": "Active Benchmarks",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "resource.type = \"gce_instance\" AND metric.type = \"custom.googleapis.com/spinsat/benchmark_active\"",
+                "aggregation": {
+                  "alignmentPeriod": "60s",
+                  "perSeriesAligner": "ALIGN_MEAN",
+                  "crossSeriesReducer": "REDUCE_SUM"
+                }
+              }
+            },
+            "thresholds": [
+              {
+                "value": 0,
+                "color": "RED",
+                "direction": "BELOW",
+                "label": "No benchmarks running"
+              }
+            ]
+          }
+        }
+      },
+      {
+        "xPos": 4,
+        "yPos": 0,
+        "width": 4,
+        "height": 4,
+        "widget": {
+          "title": "Recent Completions",
+          "scorecard": {
+            "timeSeriesQuery": {
+              "timeSeriesFilter": {
+                "filter": "resource.type = \"gce_instance\" AND metric.type = \"custom.googleapis.com/spinsat/benchmark_completed\"",
+                "aggregation": {
+                  "alignmentPeriod": "3600s",
+                  "perSeriesAligner": "ALIGN_MAX",
+                  "crossSeriesReducer": "REDUCE_SUM"
+                }
+              }
+            },
+            "sparkChartView": {
+              "sparkChartType": "SPARK_BAR"
+            }
+          }
+        }
+      },
+      {
+        "xPos": 8,
+        "yPos": 0,
+        "width": 4,
+        "height": 4,
+        "widget": {
+          "title": "Open Incidents",
+          "incidentList": {
+            "monitoredResources": [
+              {
+                "type": "gce_instance"
+              }
+            ],
+            "policyNames": []
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 4,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "CPU Utilization (per VM)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"compute.googleapis.com/instance/cpu/utilization\" AND metadata.user_labels.\"purpose\" = \"benchmark\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MEAN",
+                      "groupByFields": ["resource.label.instance_id"]
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.labels.instance_id}"
+              }
+            ],
+            "yAxis": {
+              "label": "Utilization",
+              "scale": "LINEAR"
+            },
+            "timeshiftDuration": "0s"
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 4,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Benchmark Progress (per VM)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"custom.googleapis.com/spinsat/benchmark_progress\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_MAX",
+                      "groupByFields": ["metric.label.instance_name"]
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${metric.labels.instance_name}"
+              }
+            ],
+            "yAxis": {
+              "label": "Progress (0-1)",
+              "scale": "LINEAR"
+            },
+            "timeshiftDuration": "0s"
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 8,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Network Egress (GCS uploads)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"compute.googleapis.com/instance/network/sent_bytes_count\" AND metadata.user_labels.\"purpose\" = \"benchmark\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_RATE",
+                      "groupByFields": ["resource.label.instance_id"]
+                    }
+                  }
+                },
+                "plotType": "STACKED_AREA",
+                "legendTemplate": "${resource.labels.instance_id}"
+              }
+            ],
+            "yAxis": {
+              "label": "Bytes/sec",
+              "scale": "LINEAR"
+            },
+            "timeshiftDuration": "0s"
+          }
+        }
+      },
+      {
+        "xPos": 6,
+        "yPos": 8,
+        "width": 6,
+        "height": 4,
+        "widget": {
+          "title": "Disk I/O (per VM)",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"compute.googleapis.com/instance/disk/read_bytes_count\" AND metadata.user_labels.\"purpose\" = \"benchmark\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_RATE",
+                      "groupByFields": ["resource.label.instance_id"]
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "read: ${resource.labels.instance_id}"
+              },
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"compute.googleapis.com/instance/disk/write_bytes_count\" AND metadata.user_labels.\"purpose\" = \"benchmark\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_RATE",
+                      "groupByFields": ["resource.label.instance_id"]
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "write: ${resource.labels.instance_id}"
+              }
+            ],
+            "yAxis": {
+              "label": "Bytes/sec",
+              "scale": "LINEAR"
+            },
+            "timeshiftDuration": "0s"
+          }
+        }
+      },
+      {
+        "xPos": 0,
+        "yPos": 12,
+        "width": 12,
+        "height": 4,
+        "widget": {
+          "title": "VM Uptime",
+          "xyChart": {
+            "dataSets": [
+              {
+                "timeSeriesQuery": {
+                  "timeSeriesFilter": {
+                    "filter": "resource.type = \"gce_instance\" AND metric.type = \"compute.googleapis.com/instance/uptime\" AND metadata.user_labels.\"purpose\" = \"benchmark\"",
+                    "aggregation": {
+                      "alignmentPeriod": "60s",
+                      "perSeriesAligner": "ALIGN_RATE",
+                      "groupByFields": ["resource.label.instance_id"]
+                    }
+                  }
+                },
+                "plotType": "LINE",
+                "legendTemplate": "${resource.labels.instance_id}"
+              }
+            ],
+            "yAxis": {
+              "label": "Uptime (sec/sec)",
+              "scale": "LINEAR"
+            },
+            "timeshiftDuration": "0s"
+          }
+        }
+      }
+    ]
+  }
+}

@@ -140,3 +140,14 @@ resource "google_monitoring_alert_policy" "benchmark_idle" {
 
   depends_on = [google_project_service.apis["monitoring.googleapis.com"]]
 }
+
+# ---------------------------------------------------------------------------
+# Dashboard: SpinSAT Benchmark Observability
+# ---------------------------------------------------------------------------
+
+resource "google_monitoring_dashboard" "benchmarks" {
+  project        = var.project
+  dashboard_json = file("${path.module}/dashboard-benchmarks.json")
+
+  depends_on = [google_project_service.apis["monitoring.googleapis.com"]]
+}
