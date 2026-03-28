@@ -154,7 +154,8 @@ class MetricsReporter:
             return
 
         try:
-            from google.cloud import monitoring_v3
+            from google.cloud.monitoring_v3 import types as mt
+            from google.api import monitored_resource_pb2
             from google.protobuf import timestamp_pb2
             import datetime
 
@@ -166,7 +167,7 @@ class MetricsReporter:
                 active_value = 1 if self._active else 0
                 progress_value = self._progress
 
-            resource = monitoring_v3.MonitoredResource(
+            resource = monitored_resource_pb2.MonitoredResource(
                 type="gce_instance",
                 labels={
                     "project_id": self.project,
@@ -181,31 +182,25 @@ class MetricsReporter:
             }
 
             # benchmark_active
-            active_series = monitoring_v3.TimeSeries(
-                metric=monitoring_v3.Metric(
-                    type=METRICS["benchmark_active"]["type"],
-                    labels=metric_labels,
-                ),
+            active_series = mt.TimeSeries(
+                metric={"type": METRICS["benchmark_active"]["type"], "labels": metric_labels},
                 resource=resource,
                 points=[
-                    monitoring_v3.Point(
-                        interval=monitoring_v3.TimeInterval(end_time=timestamp),
-                        value=monitoring_v3.TypedValue(int64_value=active_value),
+                    mt.Point(
+                        interval=mt.TimeInterval(end_time=timestamp),
+                        value=mt.TypedValue(int64_value=active_value),
                     )
                 ],
             )
 
             # benchmark_progress
-            progress_series = monitoring_v3.TimeSeries(
-                metric=monitoring_v3.Metric(
-                    type=METRICS["benchmark_progress"]["type"],
-                    labels=metric_labels,
-                ),
+            progress_series = mt.TimeSeries(
+                metric={"type": METRICS["benchmark_progress"]["type"], "labels": metric_labels},
                 resource=resource,
                 points=[
-                    monitoring_v3.Point(
-                        interval=monitoring_v3.TimeInterval(end_time=timestamp),
-                        value=monitoring_v3.TypedValue(double_value=progress_value),
+                    mt.Point(
+                        interval=mt.TimeInterval(end_time=timestamp),
+                        value=mt.TypedValue(double_value=progress_value),
                     )
                 ],
             )

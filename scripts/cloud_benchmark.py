@@ -188,7 +188,7 @@ class CloudBenchmark:
             "--metadata", f"max_hours={self.max_hours},gcs_results_uri={gcs_results_uri}",
             "--metadata-from-file",
             f"startup-script={self._create_startup_script()}",
-            "--scopes", "storage-rw,monitoring.write",
+            "--scopes", "storage-rw,monitoring",
             "--labels", label_str,
         ]
 
