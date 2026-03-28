@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/seanbearden/SpinSAT/compare/v0.5.3...v0.5.4) - 2026-03-28
+
+### Added
+
+- completion alert via Cloud Monitoring metric push
+- GCP alerting, idle VM auto-stop, and completion notifications
+- reusable monitoring.py module with custom Cloud Monitoring metrics
+- GCS results durability + VM labels for cloud benchmarks
+- distributed Optuna tuning on GCP spot VMs with PostgreSQL storage
+
+### Fixed
+
+- cloud Optuna robustness — retry loop, connection limits, idempotent DB setup
+- remove extra labels from metric push (hyphen chars invalid)
+- correct monitoring.py imports and VM scope for Cloud Monitoring
+
 ## [0.5.3](https://github.com/seanbearden/SpinSAT/compare/v0.5.2...v0.5.3) - 2026-03-26
 
 ### Added
