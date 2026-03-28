@@ -139,6 +139,10 @@ gh release download --pattern 'spinsat' --repo seanbearden/SpinSAT
 | check_sat | (custom C) | Fast local solution verifier |
 | gtimeout | (coreutils) | macOS timeout command |
 
+## Development Process
+
+SpinSAT is developed with [Claude Code](https://claude.ai/code) (Anthropic's AI coding agent) and [Gas Town](https://github.com/steveyegge/gastown), a multi-agent workspace manager. Gas Town coordinates persistent crew agents and transient polecat workers across rigs, using automated issue tracking, merge queues, and inter-agent communication to maintain development velocity.
+
 ## References
 
 - [Main paper (open access)](https://www.nature.com/articles/s41598-020-76666-2)
