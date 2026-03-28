@@ -871,7 +871,8 @@ def cloud_run(args, instances, suite_name):
         print(f"  NOTE: VM incurs cost until deleted! Auto-shutdown safety net: {cb.max_hours}h")
         return
 
-    # Success — delete VM now that results are downloaded
+    # Success — notify completion and delete VM
+    cb.notify_completion(results, success=True)
     cb.delete_instance()
 
     # Save in standard format

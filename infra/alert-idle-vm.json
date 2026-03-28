@@ -1,0 +1,35 @@
+{
+  "displayName": "SpinSAT: Benchmark VM Idle (no heartbeat for 15min)",
+  "documentation": {
+    "content": "A SpinSAT benchmark VM has stopped sending heartbeat metrics for 15 minutes. This means the benchmark script has either completed, crashed, or the VM is idle and incurring charges.\n\nAction: Check the VM status and stop it if no longer needed.\n- List VMs: gcloud compute instances list --filter='name~spinsat-bench' --project=spinsat\n- Stop VM: gcloud compute instances stop <name> --zone=<zone> --project=spinsat\n- Recover results: python3 scripts/benchmark_suite.py --cloud-recover <name>",
+    "mimeType": "text/markdown"
+  },
+  "userLabels": {
+    "purpose": "benchmark-idle-detection"
+  },
+  "conditions": [
+    {
+      "displayName": "benchmark_active is absent for 15min",
+      "conditionAbsent": {
+        "filter": "resource.type = \"gce_instance\" AND metric.type = \"custom.googleapis.com/spinsat/benchmark_active\"",
+        "duration": "900s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "300s",
+            "perSeriesAligner": "ALIGN_MEAN",
+            "groupByFields": ["metric.label.instance_name"]
+          }
+        ]
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  },
+  "combiner": "OR",
+  "enabled": true,
+  "notificationChannels": [
+    "projects/spinsat/notificationChannels/954340860329199977",
+    "projects/spinsat/notificationChannels/16562788783794802913"
+  ]
+}

@@ -609,6 +609,40 @@ fi
 
         return results
 
+    def notify_completion(self, results, success=True):
+        """Send a push notification about benchmark completion via Pub/Sub.
+
+        The Cloud mobile app picks up Pub/Sub-triggered alerts.
+        This publishes directly to the spinsat-vm-alerts topic.
+        """
+        try:
+            from google.cloud import pubsub_v1
+
+            publisher = pubsub_v1.PublisherClient()
+            topic_path = publisher.topic_path(self.project, "spinsat-vm-alerts")
+
+            n_instances = len(results.get("instances", []))
+            n_solved = sum(
+                1 for inst in results.get("instances", [])
+                if inst.get("spinsat", {}).get("status") == "SATISFIABLE"
+            )
+            status = "SUCCESS" if success else "PARTIAL"
+
+            message = json.dumps({
+                "type": "benchmark_completion",
+                "instance_name": self.instance_name,
+                "status": status,
+                "total_instances": n_instances,
+                "solved": n_solved,
+                "gcs_results": self.gcs_results_uri,
+            }).encode("utf-8")
+
+            publisher.publish(topic_path, message)
+            print(f"  Completion notification sent ({status}: {n_solved}/{n_instances} solved)")
+
+        except Exception as e:
+            print(f"  Could not send completion notification: {e}")
+
     # ------------------------------------------------------------------
     # Dry run
     # ------------------------------------------------------------------
