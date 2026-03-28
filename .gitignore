@@ -17,3 +17,4 @@ results/
 __pycache__/
 state.json
 competition_archive.db
+optuna_studies/

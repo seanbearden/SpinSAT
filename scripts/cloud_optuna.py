@@ -110,47 +110,44 @@ class CloudOptuna:
         return None
 
     def _ensure_cloud_sql(self):
-        """Create Cloud SQL PostgreSQL instance if it doesn't exist."""
+        """Create Cloud SQL PostgreSQL instance if it doesn't exist.
+
+        Always ensures user and database exist (idempotent).
+        """
         conn_name = self._get_db_connection_name()
         if conn_name:
             print(f"  Cloud SQL instance exists: {conn_name}")
             ip = self._get_db_ip()
             print(f"  Public IP: {ip}")
-            return ip
+        else:
+            print(f"  Creating Cloud SQL instance: {self.db_instance}...")
+            self._gcloud([
+                "sql", "instances", "create", self.db_instance,
+                "--database-version", "POSTGRES_15",
+                "--tier", "db-g1-small",
+                "--region", self.db_region,
+                "--assign-ip",
+                "--authorized-networks", "0.0.0.0/0",  # Workers need access
+                "--storage-size", "10GB",
+                "--storage-type", "SSD",
+                "--no-backup",
+                "--database-flags", "max_connections=100",
+            ], timeout=900)  # Cloud SQL creation can take 10-15 minutes
+            ip = self._get_db_ip()
+            print(f"  Cloud SQL created: {ip}")
 
-        print(f"  Creating Cloud SQL instance: {self.db_instance}...")
-        self._gcloud([
-            "sql", "instances", "create", self.db_instance,
-            "--database-version", "POSTGRES_15",
-            "--tier", "db-f1-micro",
-            "--region", self.db_region,
-            "--assign-ip",
-            "--authorized-networks", "0.0.0.0/0",  # Workers need access
-            "--storage-size", "10GB",
-            "--storage-type", "SSD",
-            "--no-backup",
-        ], timeout=600)
-
-        # Set password
-        self.db_password = self._generate_password()
-        self._gcloud([
-            "sql", "users", "set-password", "postgres",
-            "--instance", self.db_instance,
-            "--password", self.db_password,
-        ])
-
-        # Create optuna user and database
+        # Always ensure user and database exist (idempotent — ignores "already exists")
+        print(f"  Ensuring DB user '{self.db_user}' and database '{self.db_name}'...")
         self._gcloud([
             "sql", "users", "create", self.db_user,
             "--instance", self.db_instance,
             "--password", self.db_password,
-        ])
+        ], check=False)  # Ignore if user already exists
         self._gcloud([
             "sql", "databases", "create", self.db_name,
             "--instance", self.db_instance,
-        ])
+        ], check=False)  # Ignore if database already exists
 
-        ip = self._get_db_ip()
         print(f"  Cloud SQL ready: {ip}")
         return ip
 
@@ -160,34 +157,23 @@ class CloudOptuna:
         return secrets.token_urlsafe(24)
 
     def _get_or_create_password(self):
-        """Get password from GCP Secret Manager or generate new one."""
-        secret_name = f"optuna-db-password-{self.db_instance}"
+        """Get or create password, stored in a local dotfile.
 
-        # Try to read existing secret
-        result = self._gcloud([
-            "secrets", "versions", "access", "latest",
-            "--secret", secret_name,
-        ], check=False)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
+        Avoids requiring Secret Manager API. The password file is
+        gitignored and lives alongside the optuna studies.
+        """
+        pw_file = PROJECT_ROOT / "optuna_studies" / f".db-password-{self.db_instance}"
+        pw_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # Create new secret
+        if pw_file.exists():
+            password = pw_file.read_text().strip()
+            if password:
+                return password
+
         password = self._generate_password()
-        # Create the secret
-        self._gcloud([
-            "secrets", "create", secret_name,
-            "--replication-policy", "automatic",
-        ], check=False)  # May already exist
-
-        # Set the value
-        proc = subprocess.run(
-            ["gcloud", "secrets", "versions", "add", secret_name,
-             "--data-file=-", "--project", self.project],
-            input=password, capture_output=True, text=True, timeout=30,
-        )
-        if proc.returncode != 0:
-            print(f"  Warning: could not store password in Secret Manager: {proc.stderr}")
-
+        pw_file.write_text(password)
+        pw_file.chmod(0o600)
+        print(f"  Generated DB password → {pw_file}")
         return password
 
     def _build_db_url(self, db_ip):
@@ -279,7 +265,8 @@ class CloudOptuna:
         n_trials = self.config.n_trials
 
         script = f"""#!/bin/bash
-set -euo pipefail
+set -uo pipefail
+# Note: no 'set -e' — the retry loop needs to handle non-zero exits
 
 # Safety: auto-shutdown after max hours
 shutdown -h +{self.max_hours * 60} "SpinSAT Optuna worker safety timeout"
@@ -337,15 +324,26 @@ print('DB connected')
     sleep 10
 done
 
-# Run Optuna worker
+# Run Optuna worker with crash recovery loop
 echo "Starting Optuna worker {worker_id}..."
 cd /opt/spinsat
-python3 optuna_tune.py \\
-    --campaign campaign.yaml \\
-    --db-url "{db_url}" \\
-    --worker-id "{worker_id}" \\
-    --n-trials {n_trials} \\
-    > /var/log/optuna-worker.log 2>&1
+MAX_RETRIES=5
+for attempt in $(seq 1 $MAX_RETRIES); do
+    echo "=== Attempt $attempt/$MAX_RETRIES ($(date -u)) ===" >> /var/log/optuna-worker.log
+    python3 optuna_tune.py \\
+        --campaign campaign.yaml \\
+        --db-url "{db_url}" \\
+        --worker-id "{worker_id}" \\
+        --n-trials {n_trials} \\
+        >> /var/log/optuna-worker.log 2>&1
+    exit_code=$?
+    if [ $exit_code -eq 0 ]; then
+        echo "Worker completed successfully" >> /var/log/optuna-worker.log
+        break
+    fi
+    echo "Worker crashed (exit=$exit_code), retrying in 30s..." >> /var/log/optuna-worker.log
+    sleep 30
+done
 
 echo "Worker {worker_id} finished: $(date -u)"
 
