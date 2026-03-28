@@ -46,6 +46,12 @@ METRICS = {
         "metric_kind": "GAUGE",
         "value_type": "DOUBLE",
     },
+    "benchmark_completed": {
+        "type": f"{METRIC_PREFIX}/benchmark_completed",
+        "description": "Benchmark run finished (solved_count). Triggers completion alert.",
+        "metric_kind": "GAUGE",
+        "value_type": "INT64",
+    },
 }
 
 
@@ -142,6 +148,53 @@ class MetricsReporter:
             self._completed = completed
             self._total = total
             self._progress = completed / total if total > 0 else 0.0
+
+    def notify_completed(self, solved_count):
+        """Push benchmark_completed metric to trigger the completion alert."""
+        if self._client is None:
+            return
+        try:
+            from google.cloud.monitoring_v3 import types as mt
+            from google.api import monitored_resource_pb2
+            from google.protobuf import timestamp_pb2
+            import datetime
+
+            now = datetime.datetime.now(datetime.timezone.utc)
+            timestamp = timestamp_pb2.Timestamp()
+            timestamp.FromDatetime(now)
+
+            resource = monitored_resource_pb2.MonitoredResource(
+                type="gce_instance",
+                labels={
+                    "project_id": self.project,
+                    "instance_id": self.instance_name,
+                    "zone": self.zone,
+                },
+            )
+
+            series = mt.TimeSeries(
+                metric={
+                    "type": METRICS["benchmark_completed"]["type"],
+                    "labels": {"instance_name": self.instance_name},
+                },
+                resource=resource,
+                points=[
+                    mt.Point(
+                        interval=mt.TimeInterval(end_time=timestamp),
+                        value=mt.TypedValue(int64_value=solved_count),
+                    )
+                ],
+            )
+
+            self._client.create_time_series(
+                request={
+                    "name": self._project_name,
+                    "time_series": [series],
+                }
+            )
+            logger.info(f"Completion metric pushed: {solved_count} solved")
+        except Exception as e:
+            logger.warning(f"Failed to push completion metric: {e}")
 
     def _heartbeat_loop(self):
         """Background thread that pushes metrics on a fixed interval."""

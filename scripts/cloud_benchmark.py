@@ -641,7 +641,22 @@ fi
             print(f"  Completion notification sent ({status}: {n_solved}/{n_instances} solved)")
 
         except Exception as e:
-            print(f"  Could not send completion notification: {e}")
+            print(f"  Could not send Pub/Sub notification: {e}")
+
+        # Push completion metric to trigger Cloud Monitoring alert → email
+        try:
+            from monitoring import MetricsReporter
+            reporter = MetricsReporter(
+                instance_name=self.instance_name,
+                zone=self.zone,
+                project=self.project,
+            )
+            from monitoring import _get_monitoring_client
+            reporter._client = _get_monitoring_client()
+            reporter._ensure_metric_descriptors()
+            reporter.notify_completed(n_solved)
+        except Exception as e:
+            print(f"  Could not push completion metric: {e}")
 
     # ------------------------------------------------------------------
     # Dry run

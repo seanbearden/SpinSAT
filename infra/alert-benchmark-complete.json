@@ -1,0 +1,39 @@
+{
+  "displayName": "SpinSAT: Benchmark Run Completed",
+  "documentation": {
+    "content": "A SpinSAT benchmark run has completed successfully.\n\nResults are available in GCS: gs://spinsat-results/runs/\n\nCheck locally: python3 scripts/benchmark_suite.py --list-suites",
+    "mimeType": "text/markdown"
+  },
+  "userLabels": {
+    "purpose": "benchmark-completion"
+  },
+  "conditions": [
+    {
+      "displayName": "benchmark_completed > 0",
+      "conditionThreshold": {
+        "filter": "resource.type = \"gce_instance\" AND metric.type = \"custom.googleapis.com/spinsat/benchmark_completed\"",
+        "comparison": "COMPARISON_GT",
+        "thresholdValue": 0,
+        "duration": "0s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "60s",
+            "perSeriesAligner": "ALIGN_MAX",
+            "groupByFields": ["metric.label.instance_name"]
+          }
+        ],
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "alertStrategy": {
+    "autoClose": "1800s"
+  },
+  "combiner": "OR",
+  "enabled": true,
+  "notificationChannels": [
+    "projects/spinsat/notificationChannels/954340860329199977"
+  ]
+}
