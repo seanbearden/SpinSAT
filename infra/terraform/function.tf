@@ -34,7 +34,7 @@ resource "google_cloudfunctions2_function" "auto_stop_vm" {
   service_config {
     max_instance_count = 1
     timeout_seconds    = 60
-    available_memory   = "256M"
+    available_memory   = "512M"
   }
 
   event_trigger {

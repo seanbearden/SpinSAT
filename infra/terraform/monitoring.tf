@@ -2,8 +2,8 @@
 # Notification Channels
 # ---------------------------------------------------------------------------
 
-resource "google_monitoring_notification_channel" "email_primary" {
-  display_name = "SpinSAT Primary Email"
+resource "google_monitoring_notification_channel" "email" {
+  display_name = "Sean Bearden (mobile)"
   type         = "email"
   project      = var.project
 
@@ -14,18 +14,19 @@ resource "google_monitoring_notification_channel" "email_primary" {
   depends_on = [google_project_service.apis["monitoring.googleapis.com"]]
 }
 
-resource "google_monitoring_notification_channel" "email_secondary" {
-  count = var.notification_email_2 != "" ? 1 : 0
-
-  display_name = "SpinSAT Secondary Email"
-  type         = "email"
+resource "google_monitoring_notification_channel" "pubsub" {
+  display_name = "SpinSAT VM Alerts (Pub/Sub)"
+  type         = "pubsub"
   project      = var.project
 
   labels = {
-    email_address = var.notification_email_2
+    topic = google_pubsub_topic.vm_alerts.id
   }
 
-  depends_on = [google_project_service.apis["monitoring.googleapis.com"]]
+  depends_on = [
+    google_project_service.apis["monitoring.googleapis.com"],
+    google_pubsub_topic.vm_alerts,
+  ]
 }
 
 # ---------------------------------------------------------------------------
@@ -75,7 +76,7 @@ resource "google_monitoring_alert_policy" "benchmark_completed" {
   }
 
   notification_channels = [
-    google_monitoring_notification_channel.email_primary.name,
+    google_monitoring_notification_channel.email.name,
   ]
 
   user_labels = {
@@ -128,10 +129,10 @@ resource "google_monitoring_alert_policy" "benchmark_idle" {
     auto_close = "1800s"
   }
 
-  notification_channels = concat(
-    [google_monitoring_notification_channel.email_primary.name],
-    var.notification_email_2 != "" ? [google_monitoring_notification_channel.email_secondary[0].name] : [],
-  )
+  notification_channels = [
+    google_monitoring_notification_channel.email.name,
+    google_monitoring_notification_channel.pubsub.name,
+  ]
 
   user_labels = {
     purpose = "benchmark-idle-detection"

@@ -15,7 +15,7 @@ output "cloud_sql_connection_name" {
 }
 
 output "optuna_db_password" {
-  value     = random_password.optuna_db.result
+  value     = local.optuna_db_password
   sensitive = true
 }
 

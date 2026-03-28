@@ -23,18 +23,19 @@ variable "notification_email" {
   type        = string
 }
 
-variable "notification_email_2" {
-  description = "Second email address for idle-VM alerts (optional)"
-  type        = string
-  default     = ""
-}
-
 # -- Cloud SQL ---------------------------------------------------------------
 
 variable "cloud_sql_tier" {
   description = "Cloud SQL machine tier"
   type        = string
   default     = "db-g1-small"
+}
+
+variable "cloud_sql_password" {
+  description = "Optuna DB user password. If empty, a random password is generated (new project). For existing projects, pass the password from optuna_studies/.db-password-spinsat-optuna."
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "cloud_sql_authorized_networks" {

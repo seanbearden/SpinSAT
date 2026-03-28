@@ -47,14 +47,19 @@ resource "google_sql_database" "optuna" {
   project  = var.project
 }
 
+# Use provided password for existing projects, generate for new ones.
+resource "random_password" "optuna_db" {
+  length  = 32
+  special = false
+}
+
+locals {
+  optuna_db_password = var.cloud_sql_password != "" ? var.cloud_sql_password : random_password.optuna_db.result
+}
+
 resource "google_sql_user" "optuna" {
   name     = "optuna"
   instance = google_sql_database_instance.optuna.name
   project  = var.project
-  password = random_password.optuna_db.result
-}
-
-resource "random_password" "optuna_db" {
-  length  = 32
-  special = false
+  password = local.optuna_db_password
 }
