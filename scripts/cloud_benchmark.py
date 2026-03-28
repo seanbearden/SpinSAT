@@ -381,13 +381,14 @@ fi
     # Execution
     # ------------------------------------------------------------------
 
-    def run(self, timeout, tag="", solver_args=None):
+    def run(self, timeout, tag="", solver_args=None, total_instances=0):
         """Run the benchmark on the VM via nohup (survives SSH drops).
 
         The worker runs detached and writes results incrementally to
         /tmp/results.json after every instance completion. If SSH drops,
         results are still on the VM and can be recovered.
         """
+        self._metrics = None
         print()
         print("=" * 60)
         print("CLOUD BENCHMARK EXECUTION")
@@ -409,6 +410,20 @@ fi
         )
         self._ssh(launch_cmd, timeout=30)
         print("  Worker launched (detached via nohup)")
+
+        # Start metrics reporting
+        try:
+            from monitoring import MetricsReporter
+            self._metrics = MetricsReporter(
+                instance_name=self.instance_name,
+                zone=self.zone,
+                project=self.project,
+                labels={k: v for k, v in self._labels.items()},
+            )
+            self._metrics.start()
+        except Exception as e:
+            print(f"  Monitoring unavailable: {e}")
+            self._metrics = None
 
         # Wait briefly for worker to initialize
         time.sleep(5)
@@ -463,6 +478,13 @@ fi
                     elif line.strip():
                         log_lines.append(line)
 
+                # Update metrics with progress
+                if self._metrics and results_count != "?" and total_instances > 0:
+                    try:
+                        self._metrics.set_progress(int(results_count), total_instances)
+                    except (ValueError, TypeError):
+                        pass
+
                 # Print new log lines
                 for line in log_lines:
                     print(line)
@@ -470,6 +492,8 @@ fi
 
                 if status == "completed":
                     print(f"  Worker completed. ({results_count} results)")
+                    if self._metrics:
+                        self._metrics.stop()
                     break
 
                 if proc_status == "stopped" and status != "completed":
@@ -497,6 +521,13 @@ fi
                     print(f"  Recover: --cloud-recover {self.instance_name} --cloud-zone {self.zone}")
                     break
                 print(f"  Poll error ({e}), retrying...")
+
+        # Ensure metrics are stopped on any exit path
+        if self._metrics:
+            try:
+                self._metrics.stop()
+            except Exception:
+                pass
 
         return "/tmp/results.json"
 

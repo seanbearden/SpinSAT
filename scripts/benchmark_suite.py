@@ -847,7 +847,8 @@ def cloud_run(args, instances, suite_name):
         cb.upload_instances(instances)
         solver_args = args.solver_args.split() if args.solver_args else None
         remote_results = cb.run(timeout=args.timeout, tag=args.tag,
-                                solver_args=solver_args)
+                                solver_args=solver_args,
+                                total_instances=len(instances))
 
         results = cb.download_results(
             remote_results,
