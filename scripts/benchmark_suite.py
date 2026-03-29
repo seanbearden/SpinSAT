@@ -168,8 +168,32 @@ def detect_hardware():
     return f"{system} {processor} ({machine})"
 
 
+def extract_gbd_hash(cnf_path):
+    """Extract GBD hash from filename prefix if present.
+
+    GBD benchmark files use the format: <32-char-md5-hash>-<name>.cnf[.xz]
+    e.g., '8d3758d3153765ba4fa9d838d8d201c6-fla-barthel-460-5.cnf'
+
+    Returns the GBD hash if the filename matches this pattern, else None.
+    """
+    basename = os.path.basename(cnf_path)
+    # Match 32 hex chars followed by a dash at the start
+    m = re.match(r'^([0-9a-f]{32})-', basename)
+    if m:
+        return m.group(1)
+    return None
+
+
 def compute_instance_hash(cnf_path):
-    """Compute SHA-256 hash of a CNF file for instance identification."""
+    """Get instance hash for a CNF file.
+
+    Prefers the GBD hash from the filename prefix (compatible with
+    competition_results table) over computing a content hash.
+    Falls back to SHA-256 of file content for non-GBD files.
+    """
+    gbd_hash = extract_gbd_hash(cnf_path)
+    if gbd_hash:
+        return gbd_hash
     h = hashlib.sha256()
     with open(cnf_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
