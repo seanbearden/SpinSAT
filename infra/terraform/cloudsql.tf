@@ -15,7 +15,13 @@ resource "google_sql_database_instance" "optuna" {
     disk_type         = "PD_SSD"
 
     backup_configuration {
-      enabled = false
+      enabled                        = true
+      start_time                     = "04:00"
+      point_in_time_recovery_enabled = false
+      transaction_log_retention_days = 1
+      backup_retention_settings {
+        retained_backups = 7
+      }
     }
 
     ip_configuration {
@@ -36,7 +42,7 @@ resource "google_sql_database_instance" "optuna" {
     }
   }
 
-  deletion_protection = false
+  deletion_protection = true
 
   depends_on = [google_project_service.apis["sqladmin.googleapis.com"]]
 }
@@ -62,4 +68,21 @@ resource "google_sql_user" "optuna" {
   instance = google_sql_database_instance.optuna.name
   project  = var.project
   password = local.optuna_db_password
+}
+
+# ---------------------------------------------------------------------------
+# Benchmarks database — single source of truth for all benchmark results
+# ---------------------------------------------------------------------------
+
+resource "google_sql_database" "benchmarks" {
+  name     = "spinsat_benchmarks"
+  instance = google_sql_database_instance.optuna.name
+  project  = var.project
+}
+
+resource "google_sql_user" "benchmarks" {
+  name     = "benchmarks"
+  instance = google_sql_database_instance.optuna.name
+  project  = var.project
+  password = local.optuna_db_password  # reuse same password for simplicity
 }

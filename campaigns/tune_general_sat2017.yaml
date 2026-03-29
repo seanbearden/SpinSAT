@@ -1,0 +1,53 @@
+## General parameter tuning across all sat2017 random families
+## Goal: find params that generalize across barthel, komb, AND qhid
+## NOT per-family tuning — these must work on unknown instances
+study_name: "tune-general-sat2017"
+
+objective:
+  metric: par2
+  direction: minimize
+  seeds: [42, 137]
+  timeout_s: 300
+
+instances:
+  patterns:
+    - "/Users/seanbearden/gt/spinsat/benchmarks/sat2017/*barthel*.cnf"
+    - "/Users/seanbearden/gt/spinsat/benchmarks/sat2017/*komb*.cnf"
+    - "/Users/seanbearden/gt/spinsat/benchmarks/sat2017/*qhid*.cnf"
+  max_instances: 120
+
+search_space:
+  # Continuous ODE params
+  alpha_initial: {type: float, low: 1.0, high: 20.0}
+  alpha_up_mult: {type: float, low: 1.01, high: 1.5}
+  alpha_down_mult: {type: float, low: 0.5, high: 0.99}
+  alpha_interval: {type: float, low: 1000, high: 50000, log: true}
+  beta: {type: float, low: 5.0, high: 100.0}
+  gamma: {type: float, low: 0.01, high: 0.9}
+  delta: {type: float, low: 0.001, high: 0.2}
+  epsilon: {type: float, low: 1.0e-4, high: 1.0e-2, log: true}
+  # Zeta (conditional on auto_zeta)
+  auto_zeta: {type: categorical, choices: [true, false]}
+  zeta: {type: float, low: 1e-3, high: 1e-1, log: true, condition: {auto_zeta: false}}
+  # Strategy
+  strategy: {type: categorical, choices: [euler, trapezoid, rk4]}
+  # Restart (conditional on no_restart)
+  no_restart: {type: categorical, choices: [true, false]}
+  restart_mode: {type: categorical, choices: [cold, cycling], condition: {no_restart: false}}
+  # Preprocessing
+  preprocess: {type: categorical, choices: [true, false]}
+
+budget:
+  n_trials: 200
+  max_wall_hours: 24
+
+sampler: {type: TPE, seed: 42}
+pruner: {type: SuccessiveHalving, min_resource: 10, reduction_factor: 3}
+
+storage:
+  type: postgresql
+
+validation:
+  timeout_s: 5000
+  seeds: [42, 137, 271, 404, 999]
+  record_to_db: true
