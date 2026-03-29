@@ -1,0 +1,39 @@
+## Quick cloud test — qhid 2018 (200-260 vars)
+study_name: "cloud-test-qhid"
+
+objective:
+  metric: par2
+  direction: minimize
+  seeds: [42, 137]
+  timeout_s: 60
+
+instances:
+  patterns: ["/Users/seanbearden/gt/spinsat/benchmarks/sat2018/*qhid-2[0-6]*.cnf"]
+  max_instances: 20
+
+search_space:
+  alpha_initial: {type: float, low: 1.0, high: 20.0}
+  alpha_up_mult: {type: float, low: 1.01, high: 1.5}
+  alpha_down_mult: {type: float, low: 0.5, high: 0.99}
+  alpha_interval: {type: float, low: 1000, high: 50000, log: true}
+  beta: {type: float, low: 5.0, high: 100.0}
+  gamma: {type: float, low: 0.01, high: 0.9}
+  delta: {type: float, low: 0.001, high: 0.2}
+  epsilon: {type: float, low: 1.0e-4, high: 1.0e-2, log: true}
+  auto_zeta: {type: categorical, choices: [true, false]}
+  zeta: {type: float, low: 1e-3, high: 1e-1, log: true, condition: {auto_zeta: false}}
+  strategy: {type: categorical, choices: [euler, trapezoid, rk4]}
+  no_restart: {type: categorical, choices: [true, false]}
+  restart_mode: {type: categorical, choices: [cold, cycling], condition: {no_restart: false}}
+  preprocess: {type: categorical, choices: [true, false]}
+
+budget:
+  n_trials: 20
+  max_wall_hours: 1
+
+sampler: {type: TPE, seed: 42}
+pruner: {type: SuccessiveHalving, min_resource: 3, reduction_factor: 3}
+
+storage:
+  type: sqlite
+  path: "optuna_studies/cloud-test-barthel.db"
