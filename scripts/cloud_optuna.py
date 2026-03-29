@@ -303,11 +303,19 @@ gsutil cp "gs://{self.bucket}/optuna/scripts/optuna_tune.py" /opt/spinsat/optuna
 gsutil cp "gs://{self.bucket}/optuna/scripts/campaign_config.py" /opt/spinsat/campaign_config.py
 gsutil cp "gs://{self.bucket}/optuna/scripts/benchmark_suite.py" /opt/spinsat/benchmark_suite.py
 
-# Patch campaign to use local instance paths
-sed -i 's|patterns:.*|patterns: ["/opt/spinsat/instances/*.cnf"]|' /opt/spinsat/campaign.yaml
+# Patch campaign to use local instance paths (replace entire patterns block)
+python3 -c "
+import yaml, sys
+with open('/opt/spinsat/campaign.yaml') as f:
+    cfg = yaml.safe_load(f)
+cfg['instances']['patterns'] = ['/opt/spinsat/instances/*.cnf']
+with open('/opt/spinsat/campaign.yaml', 'w') as f:
+    yaml.dump(cfg, f, default_flow_style=False)
+print('Patched campaign.yaml instances to /opt/spinsat/instances/*.cnf')
+"
 
 # Patch SOLVER_CMD in optuna_tune.py to use downloaded binary
-sed -i 's|SOLVER_CMD = .*|SOLVER_CMD = "/opt/spinsat/spinsat"|' /opt/spinsat/optuna_tune.py
+sed -i 's|^SOLVER_CMD = .*|SOLVER_CMD = "/opt/spinsat/spinsat"|' /opt/spinsat/optuna_tune.py
 
 # Wait for Cloud SQL to be reachable
 echo "Checking DB connectivity..."
