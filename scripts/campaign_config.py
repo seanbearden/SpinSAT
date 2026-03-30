@@ -49,6 +49,8 @@ class PrunerConfig:
     type: str = "SuccessiveHalving"
     min_resource: int = 5
     reduction_factor: int = 3
+    n_startup_trials: int = 5
+    n_warmup_steps: int = 30
 
 
 @dataclass
@@ -107,7 +109,7 @@ _VALID_PARAM_TYPES = {"float", "int", "categorical"}
 _VALID_METRICS = {"par2"}
 _VALID_DIRECTIONS = {"minimize", "maximize"}
 _VALID_SAMPLER_TYPES = {"TPE", "Random", "Grid", "CmaEs"}
-_VALID_PRUNER_TYPES = {"SuccessiveHalving", "Hyperband", "Median", "NopPruner"}
+_VALID_PRUNER_TYPES = {"SuccessiveHalving", "Hyperband", "Median", "MedianPruner", "NopPruner"}
 _VALID_STORAGE_TYPES = {"sqlite", "postgresql"}
 
 # Known solver parameter names (validated but not enforced — unknown names
@@ -308,6 +310,8 @@ def load_campaign(yaml_path: str, resolve_instances: bool = True) -> CampaignCon
         type=pruner_raw.get("type", "SuccessiveHalving"),
         min_resource=pruner_raw.get("min_resource", 5),
         reduction_factor=pruner_raw.get("reduction_factor", 3),
+        n_startup_trials=pruner_raw.get("n_startup_trials", 5),
+        n_warmup_steps=pruner_raw.get("n_warmup_steps", 30),
     )
     if pruner.type not in _VALID_PRUNER_TYPES:
         raise CampaignError(

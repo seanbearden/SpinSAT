@@ -42,7 +42,7 @@ budget:
   max_wall_hours: 24
 
 sampler: {type: TPE, seed: 42}
-pruner: {type: SuccessiveHalving, min_resource: 10, reduction_factor: 3}
+pruner: {type: MedianPruner, n_startup_trials: 5, n_warmup_steps: 30}
 
 storage:
   type: postgresql

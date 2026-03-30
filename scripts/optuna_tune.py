@@ -300,8 +300,11 @@ def create_pruner(config):
             min_resource=pc.min_resource,
             reduction_factor=pc.reduction_factor,
         )
-    elif pc.type == "Median":
-        return optuna.pruners.MedianPruner()
+    elif pc.type == "Median" or pc.type == "MedianPruner":
+        return optuna.pruners.MedianPruner(
+            n_startup_trials=getattr(pc, 'n_startup_trials', 5),
+            n_warmup_steps=getattr(pc, 'n_warmup_steps', 30),
+        )
     elif pc.type == "NopPruner":
         return optuna.pruners.NopPruner()
     return optuna.pruners.NopPruner()
