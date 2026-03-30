@@ -116,10 +116,40 @@ def build_solver_cmd(params, timeout, seed):
 # Objective function
 # ---------------------------------------------------------------------------
 
+_benchmarks_db_url_override = None  # Set by main() from --db-url arg
+
+
 def _get_benchmarks_db_conn():
-    """Get a connection to the Cloud SQL spinsat_benchmarks database, if available."""
+    """Get a connection to the Cloud SQL spinsat_benchmarks database, if available.
+
+    Connection sources (tried in order):
+    1. --db-url CLI arg (rewritten to target spinsat_benchmarks DB)
+    2. SPINSAT_DB_URL env var
+    3. Local password file (dev machine only)
+    """
+    import psycopg2
+
+    # 1. Derive from the Optuna --db-url (works on cloud VMs)
+    if _benchmarks_db_url_override:
+        try:
+            # Replace the database name in the URL: optuna -> spinsat_benchmarks
+            bench_url = _benchmarks_db_url_override.replace("/optuna", "/spinsat_benchmarks")
+            # Also replace user if needed
+            bench_url = bench_url.replace("optuna:", "benchmarks:")
+            return psycopg2.connect(bench_url, connect_timeout=5)
+        except Exception:
+            pass
+
+    # 2. SPINSAT_DB_URL env var
+    db_url = os.environ.get("SPINSAT_DB_URL")
+    if db_url:
+        try:
+            return psycopg2.connect(db_url, connect_timeout=5)
+        except Exception:
+            pass
+
+    # 3. Local password file (dev machine)
     try:
-        import psycopg2
         pw_file = PROJECT_ROOT / "optuna_studies" / ".db-password-spinsat-optuna"
         if pw_file.exists():
             pw = pw_file.read_text().strip()
@@ -129,14 +159,7 @@ def _get_benchmarks_db_conn():
             )
     except Exception:
         pass
-    # Also check SPINSAT_DB_URL env var
-    db_url = os.environ.get("SPINSAT_DB_URL")
-    if db_url:
-        try:
-            import psycopg2
-            return psycopg2.connect(db_url, connect_timeout=5)
-        except Exception:
-            pass
+
     return None
 
 
@@ -671,6 +694,9 @@ def main():
         sys.exit(1)
 
     # Create study (with optional DB URL override for distributed workers)
+    global _benchmarks_db_url_override
+    if args.db_url:
+        _benchmarks_db_url_override = args.db_url
     study = create_study(config, db_url_override=args.db_url, worker_id=args.worker_id)
     n_existing = len(study.trials)
     worker_tag = f" (worker={args.worker_id})" if args.worker_id else ""
