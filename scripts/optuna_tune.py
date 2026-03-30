@@ -272,19 +272,30 @@ def make_objective(config):
 # Study creation
 # ---------------------------------------------------------------------------
 
-def create_sampler(config):
-    """Create Optuna sampler from campaign config."""
+def create_sampler(config, worker_id=None):
+    """Create Optuna sampler from campaign config.
+
+    When worker_id is provided (distributed mode), the sampler seed is
+    offset by a hash of the worker_id. This ensures concurrent workers
+    don't all suggest the same first params when the study is empty.
+    """
     sc = config.sampler
+    seed = sc.seed
+    if seed is not None and worker_id:
+        # Deterministic per-worker seed offset
+        import hashlib
+        offset = int(hashlib.md5(worker_id.encode()).hexdigest()[:8], 16) % 10000
+        seed = seed + offset
+
     if sc.type == "TPE":
-        return optuna.samplers.TPESampler(seed=sc.seed)
+        return optuna.samplers.TPESampler(seed=seed)
     elif sc.type == "Random":
-        return optuna.samplers.RandomSampler(seed=sc.seed)
+        return optuna.samplers.RandomSampler(seed=seed)
     elif sc.type == "CmaEs":
-        return optuna.samplers.CmaEsSampler(seed=sc.seed)
+        return optuna.samplers.CmaEsSampler(seed=seed)
     elif sc.type == "Grid":
-        # Grid sampler needs explicit search space — not supported yet
         raise ValueError("Grid sampler not yet supported in optuna_tune.py")
-    return optuna.samplers.TPESampler(seed=sc.seed)
+    return optuna.samplers.TPESampler(seed=seed)
 
 
 def create_pruner(config):
@@ -340,14 +351,14 @@ def create_storage(config, db_url_override=None):
     return f"sqlite:///{storage_path}"
 
 
-def create_study(config, db_url_override=None):
+def create_study(config, db_url_override=None, worker_id=None):
     """Create or load an Optuna study."""
     storage = create_storage(config, db_url_override)
 
     study = optuna.create_study(
         study_name=config.study_name,
         storage=storage,
-        sampler=create_sampler(config),
+        sampler=create_sampler(config, worker_id=worker_id),
         pruner=create_pruner(config),
         direction=config.direction,
         load_if_exists=True,
@@ -660,7 +671,7 @@ def main():
         sys.exit(1)
 
     # Create study (with optional DB URL override for distributed workers)
-    study = create_study(config, db_url_override=args.db_url)
+    study = create_study(config, db_url_override=args.db_url, worker_id=args.worker_id)
     n_existing = len(study.trials)
     worker_tag = f" (worker={args.worker_id})" if args.worker_id else ""
     if n_existing > 0:
