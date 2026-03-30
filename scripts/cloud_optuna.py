@@ -274,17 +274,21 @@ shutdown -h +{self.max_hours * 60} "SpinSAT Optuna worker safety timeout"
 echo "=== SpinSAT Optuna Worker {worker_id} ==="
 echo "Started: $(date -u)"
 
-# Install Python and dependencies
-if command -v dnf &>/dev/null; then
-    dnf install -y python3 python3-pip postgresql 2>/dev/null || true
-elif command -v apt-get &>/dev/null; then
-    apt-get update -qq && apt-get install -y python3 python3-pip python3-venv postgresql-client 2>/dev/null || true
+# Set up Python venv (reuse if pre-baked image has it, create otherwise)
+if [ -d /opt/optuna-env ]; then
+    source /opt/optuna-env/bin/activate
+    echo "Using pre-baked venv"
+else
+    # Fallback: install from scratch (stock Debian image)
+    if command -v dnf &>/dev/null; then
+        dnf install -y python3 python3-pip postgresql 2>/dev/null || true
+    elif command -v apt-get &>/dev/null; then
+        apt-get update -qq && apt-get install -y python3 python3-pip python3-venv postgresql-client 2>/dev/null || true
+    fi
+    python3 -m venv /opt/optuna-env
+    source /opt/optuna-env/bin/activate
+    pip install --quiet optuna psycopg2-binary pyyaml
 fi
-
-# Create venv and install optuna + psycopg2
-python3 -m venv /opt/optuna-env
-source /opt/optuna-env/bin/activate
-pip install --quiet optuna psycopg2-binary pyyaml
 
 # Download solver binary
 mkdir -p /opt/spinsat
@@ -395,8 +399,8 @@ shutdown -h now "Worker complete"
                     "--provisioning-model=SPOT",
                     "--instance-termination-action", "STOP",
                     "--restart-on-failure",
-                    "--image-family", "debian-12",
-                    "--image-project", "debian-cloud",
+                    "--image-family", "spinsat-optuna",
+                    "--image-project", self.project,
                     "--boot-disk-size", "30GB",
                     "--boot-disk-type", "pd-ssd",
                     "--scopes", "storage-ro,sql-admin",
