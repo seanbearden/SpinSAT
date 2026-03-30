@@ -17,6 +17,10 @@ pub struct Params {
     pub alpha_down: f64,
     /// Integration time between alpha_m adjustments (paper default: 1e4)
     pub alpha_interval: f64,
+    /// Activity threshold for clause skipping in derivative computation.
+    /// Clauses with C_m < threshold AND x_s < threshold skip voltage derivative
+    /// contributions (gradient + rigidity). Set to 0.0 to disable (default).
+    pub activity_threshold: f64,
 }
 
 impl Default for Params {
@@ -33,6 +37,7 @@ impl Default for Params {
             alpha_up: 1.1,
             alpha_down: 0.9,
             alpha_interval: 1e4,
+            activity_threshold: 0.0,
         }
     }
 }
@@ -367,6 +372,14 @@ pub fn compute_derivatives(
         // Memory derivatives
         derivs.dx_s[m] = params.beta * (state.x_s[m] + params.epsilon) * (c_m - params.gamma);
         derivs.dx_l[m] = state.alpha_m[m] * (c_m - params.delta);
+
+        // Activity-based clause skipping: when C_m and x_s are both below threshold,
+        // the clause's voltage contributions are negligible (gradient scales as xl*xs,
+        // rigidity scales as c_m). Skip to save work.
+        let skip_threshold = params.activity_threshold;
+        if skip_threshold > 0.0 && c_m < skip_threshold && state.x_s[m] < skip_threshold {
+            continue;
+        }
 
         // Voltage derivatives — fused gradient + rigidity
         let xl = state.x_l[m];

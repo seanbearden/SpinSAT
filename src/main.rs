@@ -32,6 +32,7 @@ fn main() {
     let mut cli_alpha_up: Option<f64> = None;
     let mut cli_alpha_down: Option<f64> = None;
     let mut cli_alpha_interval: Option<f64> = None;
+    let mut cli_activity_threshold: Option<f64> = None;
     #[cfg(feature = "trace")]
     let mut trace_mode: Option<String> = None;
     #[cfg(feature = "trace")]
@@ -143,6 +144,10 @@ fn main() {
                 i += 1;
                 cli_alpha_interval = args.get(i).and_then(|s| s.parse().ok());
             }
+            "--activity-threshold" => {
+                i += 1;
+                cli_activity_threshold = args.get(i).and_then(|s| s.parse().ok());
+            }
             "--sparse-engine" => {
                 use_sparse_engine = true;
             }
@@ -197,6 +202,7 @@ fn main() {
                 eprintln!("      --alpha-up-mult <v> Alpha increase multiplier (default: 1.1)");
                 eprintln!("      --alpha-down-mult <v> Alpha decrease multiplier (default: 0.9)");
                 eprintln!("      --alpha-interval <v> Time between alpha adjustments (default: 1e4)");
+                eprintln!("      --activity-threshold <v> Skip voltage derivs for satisfied clauses (0=off, try 0.05)");
                 eprintln!("      --sparse-engine    Use sparse matrix derivative engine (challenger)");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
@@ -296,6 +302,7 @@ fn main() {
     if let Some(v) = cli_alpha_up { params.alpha_up = v; }
     if let Some(v) = cli_alpha_down { params.alpha_down = v; }
     if let Some(v) = cli_alpha_interval { params.alpha_interval = v; }
+    if let Some(v) = cli_activity_threshold { params.activity_threshold = v; }
     if auto_zeta {
         params = params.with_auto_zeta(ratio);
     }
