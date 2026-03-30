@@ -42,7 +42,7 @@ class CloudOptuna:
         config,
         n_workers=4,
         zone="us-central1-a",
-        machine_type="c3-standard-4",
+        machine_type="n2-highcpu-8",
         max_hours=12,
         project="spinsat",
         bucket="spinsat-benchmarks",

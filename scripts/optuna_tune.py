@@ -198,44 +198,64 @@ def _record_trial_results(study_name, trial_number, params, instance_results, co
 
 
 def make_objective(config):
-    """Create the Optuna objective function closure."""
+    """Create the Optuna objective function closure.
+
+    Runs multiple instances in parallel (up to n_parallel) to utilize
+    multi-core VMs. Pruning still checks after each batch of instances.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     instances = config.resolved_instances
     seeds = config.seeds
     timeout = config.timeout_s
+    # Run up to 4 instances in parallel (each instance runs seeds sequentially)
+    n_parallel = min(4, max(1, os.cpu_count() or 1))
+
+    def _run_instance(params, instance, seeds, timeout):
+        """Run one instance across all seeds. Returns list of (instance, seed, result)."""
+        results = []
+        for seed in seeds:
+            run_cmd = build_solver_cmd(params, timeout, seed)
+            result = run_solver_with_args(run_cmd, instance, timeout + 10)
+            results.append((instance, seed, result))
+        return results
 
     def objective(trial):
         params = suggest_params(trial, config.search_space)
-        cmd = build_solver_cmd(params, timeout, seed=0)  # seed set per-run below
 
         par2_total = 0.0
         n_runs = 0
-        instance_results = []  # collect for DB recording
+        instance_results = []
 
-        for i, instance in enumerate(instances):
-            for seed in seeds:
-                # Build per-run command with this seed
-                run_cmd = build_solver_cmd(params, timeout, seed)
-                result = run_solver_with_args(run_cmd, instance, timeout + 10)
+        # Process instances in parallel batches
+        batch_size = n_parallel
+        for batch_start in range(0, len(instances), batch_size):
+            batch = instances[batch_start:batch_start + batch_size]
 
-                if result.get("error"):
-                    raise optuna.TrialPruned(f"Solver error: {result['error']}")
+            with ThreadPoolExecutor(max_workers=n_parallel) as pool:
+                futures = {
+                    pool.submit(_run_instance, params, inst, seeds, timeout): inst
+                    for inst in batch
+                }
+                for future in as_completed(futures):
+                    for instance, seed, result in future.result():
+                        if result.get("error"):
+                            raise optuna.TrialPruned(f"Solver error: {result['error']}")
 
-                if result["status"] == "SATISFIABLE":
-                    par2_total += result["time_s"]
-                elif result["status"] == "UNSATISFIABLE":
-                    # UNSAT scored by actual time, not penalized
-                    par2_total += result["time_s"]
-                else:
-                    # TIMEOUT or UNKNOWN: 2x penalty
-                    par2_total += 2 * timeout
+                        if result["status"] == "SATISFIABLE":
+                            par2_total += result["time_s"]
+                        elif result["status"] == "UNSATISFIABLE":
+                            par2_total += result["time_s"]
+                        else:
+                            par2_total += 2 * timeout
 
-                instance_results.append((instance, seed, result))
-                n_runs += 1
+                        instance_results.append((instance, seed, result))
+                        n_runs += 1
 
-            # Report intermediate PAR-2 for pruning (after each instance, all seeds)
+            # Report intermediate PAR-2 for pruning (after each batch)
             avg_so_far = par2_total / n_runs
-            trial.report(avg_so_far, step=i)
+            step = min(batch_start + batch_size, len(instances)) - 1
+            trial.report(avg_so_far, step=step)
             if trial.should_prune():
                 raise optuna.TrialPruned()
 

@@ -7,7 +7,7 @@ objective:
   metric: par2
   direction: minimize
   seeds: [42, 137]
-  timeout_s: 300
+  timeout_s: 120
 
 instances:
   patterns:
