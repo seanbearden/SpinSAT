@@ -444,6 +444,13 @@ mcp__serena__list_memories()  # See what's available
 mcp__serena__write_memory(memory_name="infrastructure/cloud_sql", content="...")
 ```
 
+**Always commit and push Serena memories.** Memories are stored in `.serena/memories/` and must be committed to git and pushed so they persist across worktrees and agents. After writing or updating memories:
+```bash
+git add .serena/memories/ .serena/project.yml
+git commit -m "chore: update Serena memories"
+git push
+```
+
 ### Critical Operational Rules (also in Serena memories)
 
 1. **Cloud SQL is single source of truth** — all experiments record to Cloud SQL first. Local SQLite is only for GitHub Pages dashboard export.
