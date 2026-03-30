@@ -1,4 +1,4 @@
-use crate::dmm::{compute_derivatives, Derivatives, DmmState, Params};
+use crate::dmm::{clause_constraint, compute_derivatives, Derivatives, DmmState, Params};
 use crate::formula::Formula;
 use crate::sparse_deriv::SparseDerivEngine;
 
@@ -43,6 +43,9 @@ pub enum Method {
     /// Bogacki-Shampine 3(2) — 3rd-order with embedded 2nd-order error estimate.
     /// FSAL: 3 RHS evals/step (vs 4 for RK4). Use with PI step controller.
     Bs3,
+    /// Strang splitting: half-step memories → full-step voltages (RK4) → half-step memories.
+    /// 2nd-order splitting accuracy. Decouples memory stiffness from voltage integration.
+    Strang,
 }
 
 impl Method {
@@ -52,6 +55,7 @@ impl Method {
             "trapezoid" | "trap" | "heun" => Some(Method::Trapezoid),
             "rk4" | "runge-kutta" | "rungekutta" => Some(Method::Rk4),
             "bs3" | "bogacki-shampine" => Some(Method::Bs3),
+            "strang" | "split" => Some(Method::Strang),
             _ => None,
         }
     }
@@ -277,6 +281,9 @@ pub fn integration_step(
             // For proper BS3 usage, call bs3_step_with_pi directly.
             bs3_step(formula, state, params, derivs, scratch, dt)
         }
+        Method::Strang => {
+            strang_step(formula, state, params, derivs, scratch, dt)
+        }
     }
 }
 
@@ -301,6 +308,9 @@ pub fn integration_step_with_engine(
         }
         Method::Bs3 => {
             bs3_step_with_engine(formula, state, params, derivs, scratch, dt, engine)
+        }
+        Method::Strang => {
+            strang_step_with_engine(formula, state, params, derivs, scratch, dt, engine)
         }
     }
 }
@@ -875,6 +885,155 @@ fn bs3_step_with_engine(
     actual_dt
 }
 
+/// Compute all C_m values from current voltages (batch version of clause_constraint).
+#[inline]
+fn compute_all_cm(formula: &Formula, v: &[f64], c_m: &mut [f64]) {
+    for m in 0..formula.num_clauses() {
+        c_m[m] = clause_constraint(formula, m, v);
+    }
+}
+
+/// Update memories (x_s analytically, x_l linearly) for a half-step with frozen C_m.
+#[inline]
+fn memory_half_step(state: &mut DmmState, c_m: &[f64], half_dt: f64, params: &Params) {
+    let m = c_m.len();
+    for i in 0..m {
+        state.x_s[i] = analytical_xs(
+            state.x_s[i], c_m[i], half_dt, params.beta, params.epsilon, params.gamma,
+        );
+    }
+    for i in 0..m {
+        let dx_l = state.alpha_m[i] * (c_m[i] - params.delta);
+        state.x_l[i] = (state.x_l[i] + dx_l * half_dt).clamp(1.0, state.max_xl);
+    }
+}
+
+/// Strang splitting step: half-memory → full-voltage(RK4) → half-memory.
+///
+/// 1. Compute C_m from current v
+/// 2. Half-step: update x_s (analytical) and x_l (linear) with frozen C_m
+/// 3. Full-step: compute full derivatives with updated memories, advance v using RK4
+/// 4. Recompute C_m from new v
+/// 5. Half-step: update x_s and x_l again with new C_m
+fn strang_step(
+    formula: &Formula,
+    state: &mut DmmState,
+    params: &Params,
+    derivs: &mut Derivatives,
+    scratch: &mut ScratchBuffers,
+    dt: f64,
+) -> f64 {
+    let n = formula.num_vars;
+
+    // Step 1: Compute C_m from current state
+    compute_all_cm(formula, &state.v, &mut derivs.c_m);
+
+    // Determine adaptive dt from a quick derivative evaluation (voltage part only matters)
+    compute_derivatives(formula, state, params, derivs);
+    let actual_dt = if dt < 0.0 {
+        adaptive_dt(&derivs.dv, params)
+    } else {
+        dt
+    };
+    let half_dt = actual_dt * 0.5;
+
+    // Step 2: Half-step memories with frozen C_m
+    memory_half_step(state, &derivs.c_m, half_dt, params);
+
+    // Step 3: Full-step voltages using RK4 with updated memories
+    // Recompute derivatives with updated x_s, x_l
+    compute_derivatives(formula, state, params, derivs);
+    // We already have k1 in derivs. Now do RK4 stages for voltage only.
+    let tmp = scratch.tmp_state.as_mut().unwrap();
+
+    // Stage 2: k2 at y + dt/2 * k1 (voltage only — memories are already updated)
+    set_tmp_state(tmp, state, &derivs.dv, &derivs.c_m, &derivs.dx_l, half_dt, params);
+    let d2 = scratch.d2.as_mut().unwrap();
+    compute_derivatives(formula, tmp, params, d2);
+
+    // Stage 3: k3 at y + dt/2 * k2
+    set_tmp_state(tmp, state, &d2.dv, &d2.c_m, &d2.dx_l, half_dt, params);
+    let d3 = scratch.d3.as_mut().unwrap();
+    compute_derivatives(formula, tmp, params, d3);
+
+    // Stage 4: k4 at y + dt * k3
+    set_tmp_state(tmp, state, &d3.dv, &d3.c_m, &d3.dx_l, actual_dt, params);
+    let d4 = scratch.d4.as_mut().unwrap();
+    compute_derivatives(formula, tmp, params, d4);
+
+    // RK4 voltage update only
+    let dt_sixth = actual_dt / 6.0;
+    for i in 0..n {
+        let dx = derivs.dv[i] + 2.0 * d2.dv[i] + 2.0 * d3.dv[i] + d4.dv[i];
+        state.v[i] = (state.v[i] + dt_sixth * dx).clamp(-1.0, 1.0);
+    }
+
+    // Step 4: Recompute C_m from new voltages
+    compute_all_cm(formula, &state.v, &mut derivs.c_m);
+
+    // Step 5: Half-step memories with new C_m
+    memory_half_step(state, &derivs.c_m, half_dt, params);
+
+    post_step(state, params, actual_dt);
+    actual_dt
+}
+
+/// Strang splitting step with pluggable derivative engine.
+fn strang_step_with_engine(
+    formula: &Formula,
+    state: &mut DmmState,
+    params: &Params,
+    derivs: &mut Derivatives,
+    scratch: &mut ScratchBuffers,
+    dt: f64,
+    engine: &mut DerivEngine,
+) -> f64 {
+    let n = formula.num_vars;
+
+    // Step 1: Compute C_m and derivatives
+    engine.compute(formula, state, params, derivs);
+    let actual_dt = if dt < 0.0 {
+        adaptive_dt(&derivs.dv, params)
+    } else {
+        dt
+    };
+    let half_dt = actual_dt * 0.5;
+
+    // Step 2: Half-step memories with frozen C_m
+    memory_half_step(state, &derivs.c_m, half_dt, params);
+
+    // Step 3: Full-step voltages using RK4 with updated memories
+    engine.compute(formula, state, params, derivs);
+    let tmp = scratch.tmp_state.as_mut().unwrap();
+
+    set_tmp_state(tmp, state, &derivs.dv, &derivs.c_m, &derivs.dx_l, half_dt, params);
+    let d2 = scratch.d2.as_mut().unwrap();
+    engine.compute(formula, tmp, params, d2);
+
+    set_tmp_state(tmp, state, &d2.dv, &d2.c_m, &d2.dx_l, half_dt, params);
+    let d3 = scratch.d3.as_mut().unwrap();
+    engine.compute(formula, tmp, params, d3);
+
+    set_tmp_state(tmp, state, &d3.dv, &d3.c_m, &d3.dx_l, actual_dt, params);
+    let d4 = scratch.d4.as_mut().unwrap();
+    engine.compute(formula, tmp, params, d4);
+
+    let dt_sixth = actual_dt / 6.0;
+    for i in 0..n {
+        let dx = derivs.dv[i] + 2.0 * d2.dv[i] + 2.0 * d3.dv[i] + d4.dv[i];
+        state.v[i] = (state.v[i] + dt_sixth * dx).clamp(-1.0, 1.0);
+    }
+
+    // Step 4: Recompute C_m from new voltages
+    compute_all_cm(formula, &state.v, &mut derivs.c_m);
+
+    // Step 5: Half-step memories with new C_m
+    memory_half_step(state, &derivs.c_m, half_dt, params);
+
+    post_step(state, params, actual_dt);
+    actual_dt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -953,6 +1112,29 @@ mod tests {
 
         let dt = integration_step(
             Method::Rk4,
+            &f,
+            &mut state,
+            &params,
+            &mut derivs,
+            &mut scratch,
+            -1.0,
+        );
+        assert!(dt > 0.0);
+        assert!(state.t > 0.0);
+        assert_bounds(&state);
+    }
+
+    #[test]
+    fn test_strang_step() {
+        let f = test_formula();
+        let params = Params::default();
+        let mut state = DmmState::new(&f, 42, &params);
+        state.init_short_memory(&f);
+        let mut derivs = Derivatives::new(f.num_vars, f.num_clauses());
+        let mut scratch = ScratchBuffers::new(&f, &state);
+
+        let dt = integration_step(
+            Method::Strang,
             &f,
             &mut state,
             &params,

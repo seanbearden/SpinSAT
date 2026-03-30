@@ -171,7 +171,7 @@ fn main() {
                 eprintln!("Options:");
                 eprintln!("  -t, --timeout <secs>   Timeout in seconds (default: 5000)");
                 eprintln!("  -s, --seed <n>         Initial random seed (default: 42)");
-                eprintln!("  -m, --method <name>    Strategy: euler, trapezoid, rk4, bs3, alternate, probe, auto (default: auto)");
+                eprintln!("  -m, --method <name>    Strategy: euler, trapezoid, rk4, bs3, strang, alternate, probe, auto (default: auto)");
                 eprintln!("  -z, --zeta <val>       Learning rate (default: auto by ratio)");
                 eprintln!("      --no-auto-zeta     Disable auto zeta selection");
                 eprintln!("      --no-preprocess    Skip CNF preprocessing");

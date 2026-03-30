@@ -48,6 +48,7 @@ impl Strategy {
             "trapezoid" | "trap" | "heun" => Some(Strategy::Fixed(Method::Trapezoid)),
             "rk4" | "runge-kutta" | "rungekutta" => Some(Strategy::Fixed(Method::Rk4)),
             "bs3" | "bogacki-shampine" => Some(Strategy::Fixed(Method::Bs3)),
+            "strang" | "split" => Some(Strategy::Fixed(Method::Strang)),
             "alternate" | "alt" => Some(Strategy::Alternate),
             "probe" => Some(Strategy::Probe),
             "adaptive" | "auto" => Some(Strategy::Adaptive),
@@ -1057,6 +1058,21 @@ mod tests {
     }
 
     #[test]
+    fn test_solve_easy_strang() {
+        let mut f = easy_formula();
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            strategy: Strategy::Fixed(Method::Strang),
+            ..Default::default()
+        };
+        match solve(&mut f, &params, &config) {
+            SolveResult::Sat(a) => assert!(f.verify(&a)),
+            SolveResult::Unsat | SolveResult::Unknown => panic!("Should have found a solution"),
+        }
+    }
+
+    #[test]
     fn test_solve_alternate() {
         let mut f = harder_formula();
         let params = Params::default();
@@ -1150,6 +1166,10 @@ mod tests {
         assert!(matches!(
             Strategy::from_str("bs3"),
             Some(Strategy::Fixed(Method::Bs3))
+        ));
+        assert!(matches!(
+            Strategy::from_str("strang"),
+            Some(Strategy::Fixed(Method::Strang))
         ));
         assert!(matches!(
             Strategy::from_str("auto"),
