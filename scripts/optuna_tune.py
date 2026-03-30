@@ -24,7 +24,7 @@ SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from benchmark_suite import run_solver_with_args, detect_solver_version, detect_git_info
+from benchmark_suite import run_solver_with_args, detect_solver_version, detect_git_info, compute_instance_hash
 from campaign_config import load_campaign, print_summary, CampaignConfig
 
 # Solver binary path
@@ -116,6 +116,87 @@ def build_solver_cmd(params, timeout, seed):
 # Objective function
 # ---------------------------------------------------------------------------
 
+def _get_benchmarks_db_conn():
+    """Get a connection to the Cloud SQL spinsat_benchmarks database, if available."""
+    try:
+        import psycopg2
+        pw_file = PROJECT_ROOT / "optuna_studies" / ".db-password-spinsat-optuna"
+        if pw_file.exists():
+            pw = pw_file.read_text().strip()
+            return psycopg2.connect(
+                host="34.57.20.164", dbname="spinsat_benchmarks",
+                user="benchmarks", password=pw, connect_timeout=5,
+            )
+    except Exception:
+        pass
+    # Also check SPINSAT_DB_URL env var
+    db_url = os.environ.get("SPINSAT_DB_URL")
+    if db_url:
+        try:
+            import psycopg2
+            return psycopg2.connect(db_url, connect_timeout=5)
+        except Exception:
+            pass
+    return None
+
+
+def _record_trial_results(study_name, trial_number, params, instance_results, config):
+    """Record per-instance trial results to Cloud SQL benchmarks DB."""
+    conn = _get_benchmarks_db_conn()
+    if conn is None:
+        return  # silently skip if no DB available
+
+    try:
+        cur = conn.cursor()
+        run_id = f"optuna_{study_name}_trial{trial_number}"
+        solver_version = detect_solver_version(SOLVER_CMD)
+        git_commit, git_dirty = detect_git_info()
+        timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+
+        # Build solver_args string from params
+        cmd_parts = build_solver_cmd(params, config.timeout_s, seed=0)
+        solver_args = " ".join(cmd_parts[1:])  # skip solver binary path
+
+        cur.execute("""
+            INSERT INTO runs (run_id, solver_version, git_commit, git_dirty,
+                timestamp, timeout_s, tag, notes, cli_command)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (run_id) DO NOTHING
+        """, (run_id, solver_version, git_commit, git_dirty,
+              timestamp, config.timeout_s,
+              f"optuna-{study_name}-t{trial_number}",
+              f"Optuna study={study_name} trial={trial_number}",
+              solver_args))
+
+        for inst_path, seed, result in instance_results:
+            instance_hash = compute_instance_hash(inst_path)
+            cur.execute("""
+                INSERT INTO results (run_id, instance_hash, status, time_s,
+                    restarts, seed, peak_xl_max, final_dt, wall_clock_s,
+                    cpu_time_s, num_vars, num_clauses, beta, gamma, delta,
+                    zeta, alpha_initial, alpha_up_mult, alpha_down_mult,
+                    alpha_interval)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING
+            """, (run_id, instance_hash, result.get("status"),
+                  result.get("time_s"), result.get("restarts"), seed,
+                  result.get("peak_xl_max"), result.get("final_dt"),
+                  result.get("wall_clock_s"), result.get("cpu_time_s"),
+                  result.get("num_vars"), result.get("num_clauses"),
+                  params.get("beta"), params.get("gamma"), params.get("delta"),
+                  params.get("zeta"), params.get("alpha_initial"),
+                  params.get("alpha_up_mult"), params.get("alpha_down_mult"),
+                  params.get("alpha_interval")))
+
+        conn.commit()
+    except Exception as e:
+        print(f"  Warning: failed to record trial results to benchmarks DB: {e}",
+              file=sys.stderr)
+        conn.rollback()
+    finally:
+        conn.close()
+
+
 def make_objective(config):
     """Create the Optuna objective function closure."""
 
@@ -129,6 +210,7 @@ def make_objective(config):
 
         par2_total = 0.0
         n_runs = 0
+        instance_results = []  # collect for DB recording
 
         for i, instance in enumerate(instances):
             for seed in seeds:
@@ -148,6 +230,7 @@ def make_objective(config):
                     # TIMEOUT or UNKNOWN: 2x penalty
                     par2_total += 2 * timeout
 
+                instance_results.append((instance, seed, result))
                 n_runs += 1
 
             # Report intermediate PAR-2 for pruning (after each instance, all seeds)
@@ -155,6 +238,11 @@ def make_objective(config):
             trial.report(avg_so_far, step=i)
             if trial.should_prune():
                 raise optuna.TrialPruned()
+
+        # Trial completed (not pruned) — record per-instance results to Cloud SQL
+        study_name = trial.study.study_name
+        _record_trial_results(study_name, trial.number, params,
+                              instance_results, config)
 
         return par2_total / n_runs
 
