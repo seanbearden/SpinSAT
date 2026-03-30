@@ -59,9 +59,29 @@ The instance is solved when `C_m < 1/2` for all clauses m. The satisfying assign
 - **Single core**: No parallelization (competition rules)
 - **Entry requirements**: https://satcompetition.github.io/2026/
 
-## Integration Method
+## Integration Methods
 
-The original MATLAB implementation used **forward-Euler** with adaptive time step. The paper notes this is "the most basic and hence the most unstable" scheme — more refined integration methods may improve stability and scaling. The adaptive step is determined by thresholding the constraint function.
+Six integration methods available via `-m <name>`:
+
+| Method | Flag | RHS evals/step | Notes |
+|--------|------|---------------|-------|
+| Forward Euler | `-m euler` | 1 | Simplest, least accurate |
+| Trapezoid (Heun) | `-m trapezoid` | 2 | 2nd-order |
+| RK4 | `-m rk4` | 4 | 4th-order, good general-purpose |
+| Bogacki-Shampine 3(2) | `-m bs3` | 3 (FSAL) | Embedded error estimate + PI step controller |
+| Strang splitting | `-m strang` | 5 (split) | Half-memory → RK4-voltage → half-memory |
+| Adaptive | `-m auto` | varies | Per-method tracking, biases toward winner |
+
+**Analytical x_s update**: All methods use the exact solution `x_s_new = (x_s + ε)·exp(β(C_m - γ)·dt) - ε` instead of numerical integration, removing β=20 stiffness from the step size constraint.
+
+**Activity-based clause skipping** (`--activity-threshold <val>`): Skips voltage derivative contributions from well-satisfied clauses (C_m < threshold AND x_s < threshold). Best with Strang on barthel instances (threshold=0.01 → 2.2x speedup). Hurts on qhid — family-dependent.
+
+**SER convergence acceleration** (`--ser`): Grows dt when residual is monotonically decreasing near solution. `dt_new = dt_old × residual_old/residual_new`.
+
+**Family-dependent optimal config**:
+- barthel (α_r≈4.3): `-m strang --activity-threshold 0.01`
+- qhid (α_r=5.5): `-m bs3`
+- General/unknown: `-m strang`
 
 ## Key Mathematical Concepts
 
@@ -76,7 +96,7 @@ The original MATLAB implementation used **forward-Euler** with adaptive time ste
 - **Language**: Rust (pre-compiled static Linux binary for competition submission)
 - **Current version**: Managed by release-plz (auto-incremented, reads from Cargo.toml)
 - **Competition track**: Experimental (no UNSAT proof certificates required)
-- **Integration methods**: Forward Euler (baseline), RK4, Trapezoid — hand-written, no external ODE library
+- **Integration methods**: Euler, Trapezoid, RK4, BS3 (Bogacki-Shampine), Strang splitting — hand-written, no external ODE library
 - **Generalized to k-SAT**: Not limited to 3-SAT; clause width detected from DIMACS input
 - **CNF preprocessing**: 6-technique pipeline (unit propagation, pure literal elimination, subsumption, self-subsuming resolution, BVE, failed literal probing) runs before ODE integration. Disable with `--no-preprocess`.
 
