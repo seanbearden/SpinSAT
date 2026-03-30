@@ -172,36 +172,37 @@ python3 scripts/benchmark_suite.py --suite ... --record --tag ...
 
 ## Benchmarking
 
-### Getting `benchmarks.db`
+### Data Storage
 
-SQLite database in project root (gitignored, distributed via GitHub Releases).
+**Cloud SQL is the single source of truth.** All benchmark results, competition reference data, and instance metadata live in the `spinsat_benchmarks` database on Cloud SQL (`34.57.20.164`). Local SQLite (`benchmarks.db`) is only for GitHub Pages dashboard export.
 
 ```bash
-# Download latest from releases
+# Initialize Cloud SQL schema (one-time)
+python3 scripts/init_benchmarks_pg.py
+
+# Migrate local SQLite to Cloud SQL
+python3 scripts/migrate_to_cloud_sql.py
+
+# Local SQLite for dashboard (download from release or export from Cloud SQL)
 gh release download --pattern 'benchmarks.db' --dir . --clobber
-
-# If schema is outdated (missing new columns), migrate:
-python3 scripts/migrate_benchmarks_db.py
-
-# If starting from scratch (needs ~/PycharmProjects/SpinSAT/meta.db):
-python3 scripts/init_benchmarks_db.py
 ```
 
-### Database Schema
+### Database Schema (Cloud SQL `spinsat_benchmarks`)
 
 | Table | Purpose | Size |
 |-------|---------|------|
-| `runs` | One row per benchmark session — version, commit, method, restart strategy, preprocessing, CLI command, structured tags, timeout | ~10 rows |
-| `results` | Per-instance results — status, time, restarts, seed, zeta, peak_xl_max, final_dt, wall/cpu time, num_vars, num_clauses | ~500 rows |
+| `runs` | One row per benchmark session — version, commit, method, restart strategy, preprocessing, CLI command, timeout | ~10 rows |
+| `results` | Per-instance results — status, time, restarts, seed, zeta, peak_xl_max, final_dt, wall/cpu time, num_vars, num_clauses | ~600 rows |
 | `instances` | 31K instance metadata snapshot from GBD | ~31K rows |
-| `instance_year_track` | Materialized year + track type per instance (parsed from `instance_tracks`) | ~19K rows |
-| `instance_files` | Instance filename lookup by hash | ~31K rows |
-| `competition_best` | Best competition solver/time per benchmarked instance (one row each) | sparse |
-| `competition_results` | Empty in main DB — full data (150K rows) lives in `competition_archive.db` on Releases | 0 rows |
+| `instance_files` | Instance filename lookup by hash | ~36K rows |
+| `competition_results` | 153K rows — SAT 2017/2018 random track + anni2022 Anniversary Track (28 solvers) | ~153K rows |
+| `family_params` | Per-family best parameters from Optuna tuning | sparse |
 
-**Views**: `best_times` (best solve time per instance across all runs), `version_comparison` (pivot results by version)
+**Views**: `best_times` (best solve time per instance across all runs)
 
-**Target size**: Under 100MB. Currently ~26MB after competition data split.
+### Instance Hash Scheme
+
+Instance hashes use the **GBD hash** extracted from the filename prefix (`<32-hex-chars>-<name>.cnf`), NOT SHA-256 of file content. `compute_instance_hash()` in `benchmark_suite.py` handles this automatically. This ensures our results join correctly with `competition_results` for head-to-head queries.
 
 ### Benchmarking Rules
 
@@ -226,28 +227,19 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ### Competition Reference Data
 
-**Source**: SAT Competition 2022 Anniversary Track
-- 5,355 instances x 28 solvers = 149,940 reference results
-- Solvers include: Kissat, CaDiCaL, IsaSAT, SLIME, and variants
-- Data from: https://github.com/mathefuchs/al-for-sat-solver-benchmarking-data
+All competition data is in Cloud SQL `spinsat_benchmarks.competition_results` (153K rows):
 
-**Data split**: Full competition data lives in `competition_archive.db` (32MB, on GitHub Releases). The main `benchmarks.db` keeps only `competition_best` — one row per benchmarked instance with the best solver/time. This is auto-updated when you run `--record`.
+| Source | Instances | Solvers | Families |
+|--------|-----------|---------|----------|
+| SAT 2022 Anniversary Track | 5,355 | 28 | structured/crafted (hardware-verification, planning, coloring, etc.) |
+| SAT 2017 Random Track | 300 | 3 | barthel, komb, qhid, uniform |
+| SAT 2018 Random Track | 255 | 10 | barthel, komb, qhid, uniform |
 
-To query full competition data for instance selection:
-```bash
-gh release download --pattern 'competition_archive.db' --dir . --clobber
-sqlite3 competition_archive.db "
-SELECT instance_hash, solver, time_s FROM competition_results
-WHERE status = 'SAT' ORDER BY time_s LIMIT 20;
-"
-```
+**Important**: Our benchmark results are on random instances (barthel, komb, qhid). The anni2022 data covers structured instances. There is zero overlap between these two sets. Head-to-head comparison only works within the same family.
 
-**Importing** (one-time setup, already done):
-```bash
-git clone --depth 1 https://github.com/mathefuchs/al-for-sat-solver-benchmarking-data /tmp/al-sat
-python3 scripts/import_competition_data.py --anni-csv /tmp/al-sat/gbd-data/anni-seq.csv --anni-db /tmp/al-sat/gbd-data/base.db
-python3 scripts/import_competition_data.py --status
-```
+**Imported from**:
+- Anniversary Track: https://github.com/mathefuchs/al-for-sat-solver-benchmarking-data
+- Random tracks: https://satcompetition.github.io/2017/results/random.csv and /2018/results/random.csv
 
 ### Recording Benchmark Results
 
@@ -418,10 +410,54 @@ Key findings (validated by deep research):
 - **AoS beats SoA for k=3** — 48-byte clause fits one cache line; SoA doubles cache fetches
 - **The hot path is memory-bound (2% of peak FLOP)** — algorithmic improvements (fewer steps) matter more than micro-optimization
 
+## Serena MCP & Memory Management
+
+**Use Serena MCP for project memory.** Serena memories persist across sessions and capture operational knowledge that would otherwise be lost on context compaction or session death.
+
+### Session Lifecycle
+
+**On session start:**
+```
+mcp__serena__activate_project("/Users/seanbearden/gt/spinsat/crew/clue")
+mcp__serena__list_memories()  # See what's available
+```
+
+**Read relevant memories** before starting work. Key memories:
+- `infrastructure/cloud_sql` — Cloud SQL connection, schema, single-source-of-truth rules
+- `infrastructure/cloud_optuna` — How to launch/monitor distributed Optuna tuning
+- `infrastructure/cloud_benchmarking` — Cloud benchmark workflow, head-to-head queries
+- `competition/requirements` — SAT Competition 2026 deadlines, tracks, submission format
+- `benchmarking/workflow` — Local and cloud benchmarking tools, suites, recording
+
+### When to Update Memories
+
+**Always update Serena memories when:**
+- Cloud infrastructure changes (new databases, schema changes, VM image updates)
+- New operational procedures are established (e.g., how to run a tuning campaign)
+- Benchmark results reveal important findings (best parameters, family-specific behavior)
+- Bugs are fixed in cloud tooling (startup scripts, worker configuration)
+- Competition deadlines or rules are verified/updated
+
+**Write memory immediately** — don't wait for session end. Sessions can die at any time.
+
+```
+mcp__serena__write_memory(memory_name="infrastructure/cloud_sql", content="...")
+```
+
+### Critical Operational Rules (also in Serena memories)
+
+1. **Cloud SQL is single source of truth** — all experiments record to Cloud SQL first. Local SQLite is only for GitHub Pages dashboard export.
+2. **NEVER run experiments locally** — all benchmarks run on GCP cloud VMs. Local is only for quick smoke tests (1-2 instances, <10s).
+3. **NEVER compare PAR-2 across different instance families** — apples to apples only. barthel PAR-2 vs qhid PAR-2 is meaningless.
+4. **Always rebuild BOTH binaries before cloud work** — `cargo build --release && cargo build --release --target x86_64-unknown-linux-musl`
+5. **VMs use pre-baked `spinsat-optuna` image** — NOT stock Debian. This cuts boot from ~4min to ~30s.
+6. **Spot VMs auto-restart on preemption** — `--instance-termination-action STOP --restart-on-failure`
+
 ## Reference Materials
 
 - `docs/efficient_solution_of_boolean_satisfiability_problems_with_digital_memcomputing.pdf` — Main paper
 - `docs/efficient_solution_of_boolean_satisfiability_problems_with_digital_memcomputing-supplementary_materials.pdf` — Supplementary materials with full mathematical proofs, numerical implementation details (Section II), and competition instance results (Section II.E)
+- `docs/sat_competition_2025_proceedings.pdf` — SAT Competition 2025 solver & benchmark descriptions (CC-BY 4.0)
 ---
 
 # Polecat Context
