@@ -4,6 +4,7 @@ use std::process;
 use spinsat::dmm::Params;
 use spinsat::parser;
 use spinsat::preprocess;
+use spinsat::integrator::Method;
 use spinsat::solver::{solve, RestartMode, SolveResult, SolverConfig, Strategy};
 
 fn main() {
@@ -14,7 +15,7 @@ fn main() {
     let mut seed: u64 = 42;
     let mut zeta: Option<f64> = None;
     let mut auto_zeta = true;
-    let mut strategy = Strategy::Adaptive;
+    let mut strategy = Strategy::Fixed(Method::Strang);
     let mut do_preprocess = true;
     let mut cdcl_fallback = false;
     let mut proof_path: Option<String> = None;
@@ -180,7 +181,7 @@ fn main() {
                 eprintln!("Options:");
                 eprintln!("  -t, --timeout <secs>   Timeout in seconds (default: 5000)");
                 eprintln!("  -s, --seed <n>         Initial random seed (default: 42)");
-                eprintln!("  -m, --method <name>    Strategy: euler, trapezoid, rk4, bs3, strang, alternate, probe, auto (default: auto)");
+                eprintln!("  -m, --method <name>    Strategy: euler, trapezoid, rk4, bs3, strang, alternate, probe, auto (default: strang)");
                 eprintln!("  -z, --zeta <val>       Learning rate (default: auto by ratio)");
                 eprintln!("      --no-auto-zeta     Disable auto zeta selection");
                 eprintln!("      --no-preprocess    Skip CNF preprocessing");

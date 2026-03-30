@@ -143,7 +143,7 @@ impl Default for SolverConfig {
             max_restarts: 1000,
             stagnation_check_interval: 5000,
             stagnation_patience: 20,
-            strategy: Strategy::Fixed(Method::Euler),
+            strategy: Strategy::Fixed(Method::Strang),
             probe_steps: 5000,
             restart_mode: RestartMode::Cycling,
             restart_noise: 0.05,
