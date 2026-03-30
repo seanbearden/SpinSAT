@@ -1,55 +1,34 @@
-# Benchmarks Database Schema (2026-03-21)
+# Benchmarks Database (Updated 2026-03-29)
 
-## Location
-- Local: `benchmarks.db` (project root, gitignored)
-- Distribution: GitHub Releases asset
-- Browser access: Datasette Lite link in README
+## IMPORTANT: Cloud SQL is the single source of truth
+See `infrastructure/cloud_sql` memory. Local SQLite is only for GitHub Pages export.
 
-## Setup
-```bash
-python3 scripts/init_benchmarks_db.py                          # first time
-python3 scripts/init_benchmarks_db.py --refresh                # re-snapshot meta.db
-python3 scripts/init_benchmarks_db.py --meta-db /path/to/meta.db  # custom path
-```
+## Local SQLite (benchmarks.db)
+- Location: project root (gitignored, distributed via GitHub Releases)
+- Used by: GitHub Pages dashboard (sql.js), offline analysis
+- Export from Cloud SQL: `python3 scripts/migrate_to_cloud_sql.py` (reverse not yet built)
 
-## Tables
-
-### Instance Metadata (snapshot from PycharmProjects/SpinSAT/meta.db)
-- `instances` — 31,809 rows (hash, family, author, track, result, etc.)
-- `instance_local` — local file paths
-- `instance_files` — filenames
-- `instance_tracks` — competition track associations (61 tracks, 189 families)
-
-### Benchmark Results
-- `runs` — one row per official benchmarking session
-  - run_id, solver_version, git_commit, git_dirty, integration_method, strategy
-  - timestamp, timeout_s, hardware, rust_version, tag, notes
-- `results` — per-instance results within a run
-  - run_id, instance_hash, status, time_s, steps, restarts, verified
-  - seed, zeta, alpha, beta, gamma, delta, epsilon, dt_min, dt_max
-
-### Competition Reference
-- `competition_results` — per-instance solve times from SAT competitions
-  - instance_hash, competition, solver, status, time_s
-- `instance_features` — GBD structural features (for later)
-
-### Views
-- `best_times` — best solve time per instance across all versions
-- `version_comparison` — pivot results by solver version
-
-## Key Queries
-```sql
--- Best time per instance
-SELECT * FROM best_times LIMIT 10;
-
--- Version-over-version comparison
-SELECT instance_hash, solver_version, time_s FROM version_comparison;
-
--- Instances where v0.4.0 improved over v0.3.0
-SELECT ... FROM results JOIN runs USING(run_id) ...
-```
+## Schema (same in both SQLite and PostgreSQL)
+- `runs` — benchmark sessions (run_id, solver_version, git_commit, tag, timeout, etc.)
+- `results` — per-instance results (status, time_s, parameters, peak_xl_max, etc.)
+- `competition_results` — 153K rows (SAT 2017/2018 random track + anni2022 Anniversary)
+- `instances` — 31K rows GBD metadata
+- `instance_files` — filename-to-hash mappings
+- `family_params` — per-family best Optuna parameters
+- `best_times` — view of best solve time per instance
 
 ## Instance Hash
-- SHA-256 of the CNF file contents
-- Join key between results and instances tables
-- Note: meta.db uses GBD isohash which may differ from SHA-256 file hash
+GBD hash extracted from filename prefix (`<32-hex>-<name>.cnf`), NOT SHA-256 of content.
+`compute_instance_hash()` in benchmark_suite.py handles this.
+This is critical for head-to-head queries against competition_results.
+
+## Competition Reference Data
+- anni2022 Anniversary Track: 149,940 rows (28 solvers x 5,355 structured instances)
+- SAT 2017 Random Track: 901 rows (3 solvers x 300 instances — barthel, komb, qhid, uniform)
+- SAT 2018 Random Track: 2,552 rows (10 solvers x 255 instances — barthel, komb, qhid, uniform)
+- Downloaded from satcompetition.github.io/2017/results/random.csv and /2018/results/random.csv
+
+## Key: No overlap between random and structured instances
+Our benchmark results are on random instances (barthel, komb, qhid).
+The anni2022 competition data covers structured/crafted instances.
+Different families, zero hash overlap. Head-to-head only works within same family.
