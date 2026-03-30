@@ -132,12 +132,17 @@ def _get_benchmarks_db_conn():
     # 1. Derive from the Optuna --db-url (works on cloud VMs)
     if _benchmarks_db_url_override:
         try:
-            # Replace the database name in the URL: optuna -> spinsat_benchmarks
-            bench_url = _benchmarks_db_url_override.replace("/optuna", "/spinsat_benchmarks")
-            # Also replace user if needed
-            bench_url = bench_url.replace("optuna:", "benchmarks:")
+            from urllib.parse import urlparse, urlunparse
+            parsed = urlparse(_benchmarks_db_url_override)
+            # Replace DB name (path) and user, keep password and host
+            bench_parsed = parsed._replace(
+                path="/spinsat_benchmarks",
+                netloc=f"benchmarks:{parsed.password}@{parsed.hostname}:{parsed.port or 5432}"
+            )
+            bench_url = urlunparse(bench_parsed)
             return psycopg2.connect(bench_url, connect_timeout=5)
-        except Exception:
+        except Exception as e:
+            print(f"  Warning: benchmarks DB connection failed: {e}", file=sys.stderr)
             pass
 
     # 2. SPINSAT_DB_URL env var
