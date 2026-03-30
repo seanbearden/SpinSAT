@@ -208,8 +208,8 @@ def make_objective(config):
     instances = config.resolved_instances
     seeds = config.seeds
     timeout = config.timeout_s
-    # Run up to 4 instances in parallel (each instance runs seeds sequentially)
-    n_parallel = min(4, max(1, os.cpu_count() or 1))
+    # Run instances in parallel across all available cores
+    n_parallel = max(1, os.cpu_count() or 1)
 
     def _run_instance(params, instance, seeds, timeout):
         """Run one instance across all seeds. Returns list of (instance, seed, result)."""
