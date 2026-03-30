@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4](https://github.com/seanbearden/SpinSAT/compare/v0.5.3...v0.5.4) - 2026-03-30
+
+### Added
+
+- change default integration method from Euler to Strang
+- add SER convergence acceleration (--ser flag)
+- activity-based clause skipping for voltage derivatives
+- add Strang splitting integrator
+- add Bogacki-Shampine 3(2) integrator with PI step controller
+- analytical x_s update replacing numerical integration
+- save per-instance Optuna trial results to Cloud SQL
+- Cloud SQL as single source of truth for benchmark results
+- Terraform infrastructure for distributed Optuna tuning
+- Cloud Monitoring dashboard for benchmark observability
+- add import blocks and fix monitoring config to match live infra
+- add Terraform for persistent GCP infrastructure
+- completion alert via Cloud Monitoring metric push
+- GCP alerting, idle VM auto-stop, and completion notifications
+- reusable monitoring.py module with custom Cloud Monitoring metrics
+- GCS results durability + VM labels for cloud benchmarks
+- distributed Optuna tuning on GCP spot VMs with PostgreSQL storage
+
+### Fixed
+
+- correct URL parsing for benchmarks DB connection on cloud VMs
+- per-instance recording on cloud VMs — derive benchmarks DB URL from --db-url
+- revert default integration method to Euler
+- per-worker sampler seed to avoid duplicate first trials
+- remove RetryFailedTrialCallback causing retry loops
+- switch to MedianPruner with warmup to reduce aggressive pruning
+- report per-instance progress in Optuna trials, not per-batch
+- use pre-baked spinsat-optuna VM image instead of stock Debian
+- spot VMs now restart on preemption instead of being deleted
+- cloud Optuna worker startup — YAML patching and solver path
+- extract GBD hash from filename prefix for competition data compatibility
+- correct Cloud SQL user import ID format
+- cloud Optuna robustness — retry loop, connection limits, idempotent DB setup
+- remove extra labels from metric push (hyphen chars invalid)
+- correct monitoring.py imports and VM scope for Cloud Monitoring
+
+### Other
+
+- update CLAUDE.md and Serena memories with integration methods
+- use all CPU cores for parallel instance evaluation in Optuna
+- parallelize Optuna trials + fix machine type and timeout
+- document hybrid DMM-CaDiCaL UNSAT detection in README
+- add Serena memory for hybrid DMM-CaDiCaL UNSAT architecture
+- require committing and pushing Serena memories
+- commit Serena memories (cloud SQL, Optuna, benchmarking)
+- add Serena MCP memory management rules and update data sections
+- add competition pipeline PRD, design doc, and SAT 2025 proceedings
+- add cloud_test campaign (qhid) and fix cloud_optuna for testing
+- move Optuna workers into existing infra/terraform
+- acknowledge Claude Code and Gas Town in README
+
 ## [0.5.3](https://github.com/seanbearden/SpinSAT/compare/v0.5.2...v0.5.3) - 2026-03-26
 
 ### Added
