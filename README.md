@@ -27,7 +27,7 @@ SpinSAT targets the **Experimental Track** of the [International SAT Competition
 - **Track**: Experimental (no UNSAT proof certificates required)
 - **Timeout**: 5000 seconds per instance
 - **Environment**: Ubuntu 24.04, Intel Xeon Platinum 8368, 32 GB RAM, single-threaded
-- **Solver type**: Incomplete (can find SAT assignments, cannot prove UNSAT)
+- **Solver type**: Hybrid DMM-CaDiCaL (ODE solver for SAT + CDCL fallback for UNSAT detection)
 
 ### Key Deadlines
 - **April 19, 2026**: Solver registration + benchmark submission
@@ -36,11 +36,23 @@ SpinSAT targets the **Experimental Track** of the [International SAT Competition
 
 ## How It Works
 
+### DMM Solver (SAT)
 1. **Parse** a SAT instance in DIMACS CNF format into a polarity matrix `Q`
-2. **Initialize** continuous voltages `v_n ∈ [-1, 1]` and memory variables `x_{s,m}`, `x_{l,m}`
-3. **Integrate** the DMM equations of motion using forward-Euler with adaptive time step
-4. **Check** if all clause constraints `C_m < 1/2` — if so, threshold voltages to obtain a Boolean assignment
-5. **Output** SAT + assignment, or UNKNOWN if timeout is reached
+2. **Preprocess** with a 6-technique CNF simplification pipeline (unit propagation, pure literal elimination, subsumption, self-subsuming resolution, BVE, failed literal probing)
+3. **Initialize** continuous voltages `v_n ∈ [-1, 1]` and memory variables `x_{s,m}`, `x_{l,m}`
+4. **Integrate** the DMM equations of motion using forward-Euler, RK4, or Trapezoid with adaptive time step
+5. **Check** if all clause constraints `C_m < 1/2` — if so, threshold voltages to obtain a Boolean assignment
+6. **Restart** with cycling or cold restart strategies when the solver stagnates
+
+### Hybrid DMM-CaDiCaL (UNSAT Detection)
+SpinSAT includes a bidirectional integration with CaDiCaL, a state-of-the-art CDCL solver, for UNSAT detection:
+
+1. **Signal detection** — monitors DMM integration for stagnation patterns (unsat count plateaus, memory saturation) that suggest the instance may be unsatisfiable
+2. **Mid-solve handoff** — when stagnation is detected, DMM's best voltages seed CaDiCaL's phase hints and frustrated variables (highest x_l) become CaDiCaL assumptions
+3. **Bounded CDCL attempt** — CaDiCaL runs with a conflict budget; if it proves UNSAT, we're done; if inconclusive, its learned information feeds back to DMM
+4. **Final fallback** — after DMM timeout, CaDiCaL gets all remaining time with DMM-informed phase hints
+
+This hybrid approach means SpinSAT can solve SAT instances via ODE integration (its strength) while detecting UNSAT instances via CaDiCaL — without paying overhead on satisfiable instances.
 
 ## Building
 
@@ -133,6 +145,7 @@ gh release download --pattern 'spinsat' --repo seanbearden/SpinSAT
 |------|---------|---------|
 | Rust (rustc) | 1.94.0 | Solver implementation language |
 | release-plz | latest | Automated versioning, CHANGELOG, crates.io publish |
+| CaDiCaL | 2.1.3 | CDCL solver for hybrid UNSAT detection (linked via FFI) |
 | Kissat | 4.0.4 | CDCL baseline solver for comparison |
 | MiniSat | 2.2.1 | Benchmark difficulty validation |
 | gratchk | (MLton build) | Competition-grade SAT certificate verifier |
