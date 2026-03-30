@@ -3,7 +3,10 @@ use std::time::Instant;
 use crate::cdcl::{CdclResult, CdclSolver};
 use crate::dmm::{count_unsat, extract_assignment, is_solved, Derivatives, DmmState, Params};
 use crate::formula::Formula;
-use crate::integrator::{integration_step_with_engine, DerivEngine, Method, ScratchBuffers};
+use crate::integrator::{
+    bs3_step_with_pi, integration_step_with_engine, DerivEngine, FsalState, Method, PiController,
+    ScratchBuffers,
+};
 use crate::unsat_signal::{SignalConfig, SignalKind, UnsatSignalDetector};
 
 #[cfg(feature = "trace")]
@@ -44,6 +47,7 @@ impl Strategy {
             "euler" => Some(Strategy::Fixed(Method::Euler)),
             "trapezoid" | "trap" | "heun" => Some(Strategy::Fixed(Method::Trapezoid)),
             "rk4" | "runge-kutta" | "rungekutta" => Some(Strategy::Fixed(Method::Rk4)),
+            "bs3" | "bogacki-shampine" => Some(Strategy::Fixed(Method::Bs3)),
             "alternate" | "alt" => Some(Strategy::Alternate),
             "probe" => Some(Strategy::Probe),
             "adaptive" | "auto" => Some(Strategy::Adaptive),
@@ -215,8 +219,34 @@ fn run_attempt(
     let mut signal_fired: Option<SignalKind> = None;
     let mut peak_xl_max: f64 = 0.0;
     let mut last_dt: f64 = 0.0;
+
+    // BS3 with PI controller uses a dedicated loop with FSAL and step rejection
+    let mut fsal_state: Option<FsalState> = if method == Method::Bs3 {
+        Some(FsalState::new(formula.num_vars, formula.num_clauses()))
+    } else {
+        None
+    };
+    let mut pi_controller: Option<PiController> = if method == Method::Bs3 {
+        Some(PiController::new(params.dt_min, params.dt_max))
+    } else {
+        None
+    };
+
     loop {
-        last_dt = integration_step_with_engine(method, formula, state, params, derivs, scratch, -1.0, engine);
+        if method == Method::Bs3 {
+            let fsal = fsal_state.as_mut().unwrap();
+            let pi = pi_controller.as_mut().unwrap();
+            let (dt, _err) = bs3_step_with_pi(
+                formula, state, params, derivs, scratch, fsal, pi, engine,
+            );
+            if dt < 0.0 {
+                // Step rejected — retry immediately (PI already shrunk dt)
+                continue;
+            }
+            last_dt = dt;
+        } else {
+            last_dt = integration_step_with_engine(method, formula, state, params, derivs, scratch, -1.0, engine);
+        }
 
         // Track peak x_l value across all clauses
         for &xl in &state.x_l {
@@ -1012,6 +1042,21 @@ mod tests {
     }
 
     #[test]
+    fn test_solve_easy_bs3() {
+        let mut f = easy_formula();
+        let params = Params::default();
+        let config = SolverConfig {
+            timeout_secs: 10.0,
+            strategy: Strategy::Fixed(Method::Bs3),
+            ..Default::default()
+        };
+        match solve(&mut f, &params, &config) {
+            SolveResult::Sat(a) => assert!(f.verify(&a)),
+            SolveResult::Unsat | SolveResult::Unknown => panic!("Should have found a solution"),
+        }
+    }
+
+    #[test]
     fn test_solve_alternate() {
         let mut f = harder_formula();
         let params = Params::default();
@@ -1102,6 +1147,10 @@ mod tests {
             Some(Strategy::Alternate)
         ));
         assert!(matches!(Strategy::from_str("probe"), Some(Strategy::Probe)));
+        assert!(matches!(
+            Strategy::from_str("bs3"),
+            Some(Strategy::Fixed(Method::Bs3))
+        ));
         assert!(matches!(
             Strategy::from_str("auto"),
             Some(Strategy::Adaptive)
