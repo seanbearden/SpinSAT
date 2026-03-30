@@ -64,6 +64,14 @@ fn adaptive_dt(dv: &[f64], params: &Params) -> f64 {
     }
 }
 
+/// Compute analytical x_s update for one clause.
+/// Exact solution of dx_s/dt = β(x_s + ε)(C_m - γ) with C_m frozen over the step.
+#[inline]
+fn analytical_xs(x_s: f64, c_m: f64, dt: f64, beta: f64, epsilon: f64, gamma: f64) -> f64 {
+    let exponent = beta * (c_m - gamma) * dt;
+    ((x_s + epsilon) * exponent.exp() - epsilon).clamp(0.0, 1.0)
+}
+
 /// Post-step bookkeeping: track time and check α_m adjustment.
 fn post_step(state: &mut DmmState, params: &Params, dt: f64) {
     state.t += dt;
@@ -114,19 +122,22 @@ impl ScratchBuffers {
 }
 
 /// Set tmp_state = base_state + dt * derivatives, with clamping.
+/// Uses analytical x_s update (exact solution with C_m frozen) instead of Euler step.
 fn set_tmp_state(
     tmp: &mut DmmState,
     base: &DmmState,
     dv: &[f64],
-    dx_s: &[f64],
+    c_m: &[f64],
     dx_l: &[f64],
     dt: f64,
+    params: &Params,
 ) {
     for i in 0..base.v.len() {
         tmp.v[i] = (base.v[i] + dt * dv[i]).clamp(-1.0, 1.0);
     }
     for i in 0..base.x_s.len() {
-        tmp.x_s[i] = (base.x_s[i] + dt * dx_s[i]).clamp(0.0, 1.0);
+        tmp.x_s[i] =
+            analytical_xs(base.x_s[i], c_m[i], dt, params.beta, params.epsilon, params.gamma);
     }
     for i in 0..base.x_l.len() {
         tmp.x_l[i] = (base.x_l[i] + dt * dx_l[i]).clamp(1.0, base.max_xl);
@@ -198,7 +209,14 @@ pub fn euler_step(
         state.x_l[i] = (state.x_l[i] + derivs.dx_l[i] * actual_dt).clamp(1.0, state.max_xl);
     }
     for i in 0..m {
-        state.x_s[i] = (state.x_s[i] + derivs.dx_s[i] * actual_dt).clamp(0.0, 1.0);
+        state.x_s[i] = analytical_xs(
+            state.x_s[i],
+            derivs.c_m[i],
+            actual_dt,
+            params.beta,
+            params.epsilon,
+            params.gamma,
+        );
     }
     for i in 0..n {
         state.v[i] = (state.v[i] + derivs.dv[i] * actual_dt).clamp(-1.0, 1.0);
@@ -232,12 +250,7 @@ fn trapezoid_step(
     // Stage 2: k2 at Euler-predicted state
     let tmp = scratch.tmp_state.as_mut().unwrap();
     set_tmp_state(
-        tmp,
-        state,
-        &derivs.dv,
-        &derivs.dx_s,
-        &derivs.dx_l,
-        actual_dt,
+        tmp, state, &derivs.dv, &derivs.c_m, &derivs.dx_l, actual_dt, params,
     );
     let d2 = scratch.d2.as_mut().unwrap();
     compute_derivatives(formula, tmp, params, d2);
@@ -249,7 +262,15 @@ fn trapezoid_step(
             (state.x_l[i] + half_dt * (derivs.dx_l[i] + d2.dx_l[i])).clamp(1.0, state.max_xl);
     }
     for i in 0..m {
-        state.x_s[i] = (state.x_s[i] + half_dt * (derivs.dx_s[i] + d2.dx_s[i])).clamp(0.0, 1.0);
+        let avg_cm = 0.5 * (derivs.c_m[i] + d2.c_m[i]);
+        state.x_s[i] = analytical_xs(
+            state.x_s[i],
+            avg_cm,
+            actual_dt,
+            params.beta,
+            params.epsilon,
+            params.gamma,
+        );
     }
     for i in 0..n {
         state.v[i] = (state.v[i] + half_dt * (derivs.dv[i] + d2.dv[i])).clamp(-1.0, 1.0);
@@ -287,17 +308,17 @@ fn rk4_step(
     let tmp = scratch.tmp_state.as_mut().unwrap();
 
     // Stage 2: k2 at y + dt/2 * k1
-    set_tmp_state(tmp, state, &derivs.dv, &derivs.dx_s, &derivs.dx_l, half_dt);
+    set_tmp_state(tmp, state, &derivs.dv, &derivs.c_m, &derivs.dx_l, half_dt, params);
     let d2 = scratch.d2.as_mut().unwrap();
     compute_derivatives(formula, tmp, params, d2);
 
     // Stage 3: k3 at y + dt/2 * k2
-    set_tmp_state(tmp, state, &d2.dv, &d2.dx_s, &d2.dx_l, half_dt);
+    set_tmp_state(tmp, state, &d2.dv, &d2.c_m, &d2.dx_l, half_dt, params);
     let d3 = scratch.d3.as_mut().unwrap();
     compute_derivatives(formula, tmp, params, d3);
 
     // Stage 4: k4 at y + dt * k3
-    set_tmp_state(tmp, state, &d3.dv, &d3.dx_s, &d3.dx_l, actual_dt);
+    set_tmp_state(tmp, state, &d3.dv, &d3.c_m, &d3.dx_l, actual_dt, params);
     let d4 = scratch.d4.as_mut().unwrap();
     compute_derivatives(formula, tmp, params, d4);
 
@@ -308,8 +329,15 @@ fn rk4_step(
         state.x_l[i] = (state.x_l[i] + dt_sixth * dx).clamp(1.0, state.max_xl);
     }
     for i in 0..m {
-        let dx = derivs.dx_s[i] + 2.0 * d2.dx_s[i] + 2.0 * d3.dx_s[i] + d4.dx_s[i];
-        state.x_s[i] = (state.x_s[i] + dt_sixth * dx).clamp(0.0, 1.0);
+        let avg_cm = (derivs.c_m[i] + 2.0 * d2.c_m[i] + 2.0 * d3.c_m[i] + d4.c_m[i]) / 6.0;
+        state.x_s[i] = analytical_xs(
+            state.x_s[i],
+            avg_cm,
+            actual_dt,
+            params.beta,
+            params.epsilon,
+            params.gamma,
+        );
     }
     for i in 0..n {
         let dx = derivs.dv[i] + 2.0 * d2.dv[i] + 2.0 * d3.dv[i] + d4.dv[i];
@@ -346,7 +374,14 @@ fn euler_step_with_engine(
         state.x_l[i] = (state.x_l[i] + derivs.dx_l[i] * actual_dt).clamp(1.0, state.max_xl);
     }
     for i in 0..m {
-        state.x_s[i] = (state.x_s[i] + derivs.dx_s[i] * actual_dt).clamp(0.0, 1.0);
+        state.x_s[i] = analytical_xs(
+            state.x_s[i],
+            derivs.c_m[i],
+            actual_dt,
+            params.beta,
+            params.epsilon,
+            params.gamma,
+        );
     }
     for i in 0..n {
         state.v[i] = (state.v[i] + derivs.dv[i] * actual_dt).clamp(-1.0, 1.0);
@@ -375,7 +410,7 @@ fn trapezoid_step_with_engine(
     };
 
     let tmp = scratch.tmp_state.as_mut().unwrap();
-    set_tmp_state(tmp, state, &derivs.dv, &derivs.dx_s, &derivs.dx_l, actual_dt);
+    set_tmp_state(tmp, state, &derivs.dv, &derivs.c_m, &derivs.dx_l, actual_dt, params);
     let d2 = scratch.d2.as_mut().unwrap();
     engine.compute(formula, tmp, params, d2);
 
@@ -385,7 +420,15 @@ fn trapezoid_step_with_engine(
             (state.x_l[i] + half_dt * (derivs.dx_l[i] + d2.dx_l[i])).clamp(1.0, state.max_xl);
     }
     for i in 0..m {
-        state.x_s[i] = (state.x_s[i] + half_dt * (derivs.dx_s[i] + d2.dx_s[i])).clamp(0.0, 1.0);
+        let avg_cm = 0.5 * (derivs.c_m[i] + d2.c_m[i]);
+        state.x_s[i] = analytical_xs(
+            state.x_s[i],
+            avg_cm,
+            actual_dt,
+            params.beta,
+            params.epsilon,
+            params.gamma,
+        );
     }
     for i in 0..n {
         state.v[i] = (state.v[i] + half_dt * (derivs.dv[i] + d2.dv[i])).clamp(-1.0, 1.0);
@@ -417,15 +460,15 @@ fn rk4_step_with_engine(
     let half_dt = actual_dt * 0.5;
     let tmp = scratch.tmp_state.as_mut().unwrap();
 
-    set_tmp_state(tmp, state, &derivs.dv, &derivs.dx_s, &derivs.dx_l, half_dt);
+    set_tmp_state(tmp, state, &derivs.dv, &derivs.c_m, &derivs.dx_l, half_dt, params);
     let d2 = scratch.d2.as_mut().unwrap();
     engine.compute(formula, tmp, params, d2);
 
-    set_tmp_state(tmp, state, &d2.dv, &d2.dx_s, &d2.dx_l, half_dt);
+    set_tmp_state(tmp, state, &d2.dv, &d2.c_m, &d2.dx_l, half_dt, params);
     let d3 = scratch.d3.as_mut().unwrap();
     engine.compute(formula, tmp, params, d3);
 
-    set_tmp_state(tmp, state, &d3.dv, &d3.dx_s, &d3.dx_l, actual_dt);
+    set_tmp_state(tmp, state, &d3.dv, &d3.c_m, &d3.dx_l, actual_dt, params);
     let d4 = scratch.d4.as_mut().unwrap();
     engine.compute(formula, tmp, params, d4);
 
@@ -435,8 +478,15 @@ fn rk4_step_with_engine(
         state.x_l[i] = (state.x_l[i] + dt_sixth * dx).clamp(1.0, state.max_xl);
     }
     for i in 0..m {
-        let dx = derivs.dx_s[i] + 2.0 * d2.dx_s[i] + 2.0 * d3.dx_s[i] + d4.dx_s[i];
-        state.x_s[i] = (state.x_s[i] + dt_sixth * dx).clamp(0.0, 1.0);
+        let avg_cm = (derivs.c_m[i] + 2.0 * d2.c_m[i] + 2.0 * d3.c_m[i] + d4.c_m[i]) / 6.0;
+        state.x_s[i] = analytical_xs(
+            state.x_s[i],
+            avg_cm,
+            actual_dt,
+            params.beta,
+            params.epsilon,
+            params.gamma,
+        );
     }
     for i in 0..n {
         let dx = derivs.dv[i] + 2.0 * d2.dv[i] + 2.0 * d3.dv[i] + d4.dv[i];
