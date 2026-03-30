@@ -687,12 +687,11 @@ def main():
         callback = ProgressCallback(config)
         callbacks = [callback]
 
-        # Add retry callback for distributed mode (handles preempted trials)
-        if args.db_url:
-            retry_cb = optuna.storages.RetryFailedTrialCallback(
-                max_retry=2,
-            )
-            callbacks.append(retry_cb)
+        # Note: RetryFailedTrialCallback removed — it caused retry loops where
+        # pruned trials created new failed entries that got retried with the same
+        # params, starving TPE of exploration. Preempted workers are handled by
+        # RDBStorage heartbeat/grace_period (marks trials as FAIL after grace period,
+        # TPE samples new params for the next trial).
 
         study.optimize(
             objective,
