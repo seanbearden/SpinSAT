@@ -127,6 +127,10 @@ pub struct SolverConfig {
     pub cdcl_conflict_budget: i32,
     /// Use sparse matrix derivative engine (challenger) instead of loop (champion).
     pub use_sparse_engine: bool,
+    /// Enable Switched Evolution Relaxation (SER) for convergence acceleration.
+    /// When residual is monotonically decreasing, grows dt proportionally to
+    /// convergence rate: dt_new = dt_old * ||F_old|| / ||F_new||.
+    pub enable_ser: bool,
     #[cfg(feature = "trace")]
     pub trace_config: Option<crate::trace::TraceConfig>,
 }
@@ -150,6 +154,7 @@ impl Default for SolverConfig {
             signal_config: SignalConfig::default(),
             cdcl_conflict_budget: 100_000,
             use_sparse_engine: false,
+            enable_ser: false,
             #[cfg(feature = "trace")]
             trace_config: None,
         }
@@ -221,6 +226,16 @@ fn run_attempt(
     let mut peak_xl_max: f64 = 0.0;
     let mut last_dt: f64 = 0.0;
 
+    // SER (Switched Evolution Relaxation) state
+    let mut ser_active = false;
+    let mut ser_dt: f64 = 0.0;
+    let mut ser_prev_residual: f64 = f64::MAX;
+    let mut ser_decreasing_count: u32 = 0;
+    const SER_ENGAGE_COUNT: u32 = 5;   // consecutive decreasing steps to engage
+    const SER_DT_MAX_MULT: f64 = 10.0; // allow dt up to 10x normal dt_max
+    const SER_MAX_GROWTH: f64 = 2.0;   // max growth factor per step
+    const SER_RESIDUAL_THRESHOLD: f64 = 0.4; // max(C_m) must be below this
+
     // BS3 with PI controller uses a dedicated loop with FSAL and step rejection
     let mut fsal_state: Option<FsalState> = if method == Method::Bs3 {
         Some(FsalState::new(formula.num_vars, formula.num_clauses()))
@@ -246,7 +261,32 @@ fn run_attempt(
             }
             last_dt = dt;
         } else {
-            last_dt = integration_step_with_engine(method, formula, state, params, derivs, scratch, -1.0, engine);
+            let step_dt = if ser_active { ser_dt } else { -1.0 };
+            last_dt = integration_step_with_engine(method, formula, state, params, derivs, scratch, step_dt, engine);
+        }
+
+        // SER residual tracking
+        if config.enable_ser && method != Method::Bs3 {
+            let residual: f64 = derivs.c_m.iter().sum();
+            let max_cm = derivs.c_m.iter().cloned().fold(0.0f64, f64::max);
+
+            if residual < ser_prev_residual && max_cm < SER_RESIDUAL_THRESHOLD {
+                ser_decreasing_count += 1;
+                if ser_active && residual > 0.0 {
+                    // Grow dt proportionally to convergence rate
+                    let growth = (ser_prev_residual / residual).min(SER_MAX_GROWTH);
+                    ser_dt = (last_dt * growth).min(params.dt_max * SER_DT_MAX_MULT);
+                } else if ser_decreasing_count >= SER_ENGAGE_COUNT {
+                    // Engage SER
+                    ser_active = true;
+                    ser_dt = last_dt * 1.5; // initial boost
+                }
+            } else {
+                // Residual increased or above threshold — disengage SER
+                ser_active = false;
+                ser_decreasing_count = 0;
+            }
+            ser_prev_residual = residual;
         }
 
         // Track peak x_l value across all clauses

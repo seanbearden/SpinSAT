@@ -24,6 +24,7 @@ fn main() {
     let mut restart_noise: f64 = 0.05;
     let mut xl_decay: f64 = 0.5;
     let mut use_sparse_engine = false;
+    let mut enable_ser = false;
     let mut cli_beta: Option<f64> = None;
     let mut cli_gamma: Option<f64> = None;
     let mut cli_delta: Option<f64> = None;
@@ -148,6 +149,9 @@ fn main() {
                 i += 1;
                 cli_activity_threshold = args.get(i).and_then(|s| s.parse().ok());
             }
+            "--ser" => {
+                enable_ser = true;
+            }
             "--sparse-engine" => {
                 use_sparse_engine = true;
             }
@@ -202,7 +206,8 @@ fn main() {
                 eprintln!("      --alpha-up-mult <v> Alpha increase multiplier (default: 1.1)");
                 eprintln!("      --alpha-down-mult <v> Alpha decrease multiplier (default: 0.9)");
                 eprintln!("      --alpha-interval <v> Time between alpha adjustments (default: 1e4)");
-                eprintln!("      --activity-threshold <v> Skip voltage derivs for satisfied clauses (0=off, try 0.05)");
+                eprintln!("      --activity-threshold <v> Skip voltage derivs for satisfied clauses (0=off, try 0.01)");
+                eprintln!("      --ser              Enable SER convergence acceleration (grows dt near solution)");
                 eprintln!("      --sparse-engine    Use sparse matrix derivative engine (challenger)");
                 eprintln!("  -V, --version          Print version");
                 eprintln!("  -h, --help             Show this help");
@@ -355,6 +360,7 @@ fn main() {
     };
 
     config.use_sparse_engine = use_sparse_engine;
+    config.enable_ser = enable_ser;
 
     if no_restart {
         config.max_restarts = u32::MAX;
