@@ -227,37 +227,36 @@ def make_objective(config):
         n_runs = 0
         instance_results = []
 
-        # Process instances in parallel batches
-        batch_size = n_parallel
-        for batch_start in range(0, len(instances), batch_size):
-            batch = instances[batch_start:batch_start + batch_size]
+        # Process instances in parallel
+        instances_done = 0
+        with ThreadPoolExecutor(max_workers=n_parallel) as pool:
+            futures = {
+                pool.submit(_run_instance, params, inst, seeds, timeout): (i, inst)
+                for i, inst in enumerate(instances)
+            }
+            for future in as_completed(futures):
+                idx, inst = futures[future]
+                for instance, seed, result in future.result():
+                    if result.get("error"):
+                        raise optuna.TrialPruned(f"Solver error: {result['error']}")
 
-            with ThreadPoolExecutor(max_workers=n_parallel) as pool:
-                futures = {
-                    pool.submit(_run_instance, params, inst, seeds, timeout): inst
-                    for inst in batch
-                }
-                for future in as_completed(futures):
-                    for instance, seed, result in future.result():
-                        if result.get("error"):
-                            raise optuna.TrialPruned(f"Solver error: {result['error']}")
+                    if result["status"] == "SATISFIABLE":
+                        par2_total += result["time_s"]
+                    elif result["status"] == "UNSATISFIABLE":
+                        par2_total += result["time_s"]
+                    else:
+                        par2_total += 2 * timeout
 
-                        if result["status"] == "SATISFIABLE":
-                            par2_total += result["time_s"]
-                        elif result["status"] == "UNSATISFIABLE":
-                            par2_total += result["time_s"]
-                        else:
-                            par2_total += 2 * timeout
+                    instance_results.append((instance, seed, result))
+                    n_runs += 1
 
-                        instance_results.append((instance, seed, result))
-                        n_runs += 1
-
-            # Report intermediate PAR-2 for pruning (after each batch)
-            avg_so_far = par2_total / n_runs
-            step = min(batch_start + batch_size, len(instances)) - 1
-            trial.report(avg_so_far, step=step)
-            if trial.should_prune():
-                raise optuna.TrialPruned()
+                # Report after each instance completes (accurate count)
+                instances_done += 1
+                avg_so_far = par2_total / n_runs
+                trial.report(avg_so_far, step=instances_done)
+                if trial.should_prune():
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    raise optuna.TrialPruned()
 
         # Trial completed (not pruned) — record per-instance results to Cloud SQL
         study_name = trial.study.study_name
