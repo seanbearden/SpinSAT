@@ -64,10 +64,14 @@ pub enum RestartMode {
     Cold,
     /// Warm restart: best-known voltages + noise, x_l decay transfer.
     Warm,
+    /// Warm-random: random voltages + x_l decay transfer (exploration with memory).
+    WarmRandom,
     /// Anti-phase: negate best-known voltages to target different solution cluster.
     AntiPhase,
     /// Cycle through modes: Cold → Warm → Warm → AntiPhase → repeat.
     Cycling,
+    /// Cycle: WarmRandom → AntiPhase → repeat.
+    Cycling2,
 }
 
 impl RestartMode {
@@ -75,8 +79,10 @@ impl RestartMode {
         match s.to_lowercase().as_str() {
             "cold" => Some(RestartMode::Cold),
             "warm" => Some(RestartMode::Warm),
+            "warm-random" | "warmrandom" => Some(RestartMode::WarmRandom),
             "anti-phase" | "antiphase" | "anti" => Some(RestartMode::AntiPhase),
             "cycling" | "cycle" => Some(RestartMode::Cycling),
+            "cycling2" | "cycle2" => Some(RestartMode::Cycling2),
             _ => None,
         }
     }
@@ -88,6 +94,15 @@ impl RestartMode {
             1 => RestartMode::Warm,       // exploitation
             2 => RestartMode::Warm,       // exploitation
             3 => RestartMode::AntiPhase,  // cluster hop
+            _ => unreachable!(),
+        }
+    }
+
+    /// Select restart type for cycling2: WarmRandom → AntiPhase → repeat.
+    fn select_for_cycle2(restart_count: u32) -> RestartMode {
+        match restart_count % 2 {
+            0 => RestartMode::WarmRandom, // exploration with memory
+            1 => RestartMode::AntiPhase,  // cluster hop
             _ => unreachable!(),
         }
     }
@@ -855,6 +870,7 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
         // Select restart mode
         let mode = match config.restart_mode {
             RestartMode::Cycling => RestartMode::select_for_cycle(restart_count),
+            RestartMode::Cycling2 => RestartMode::select_for_cycle2(restart_count),
             other => other,
         };
 
@@ -869,7 +885,7 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
         );
 
         match mode {
-            RestartMode::Cold | RestartMode::Cycling => {
+            RestartMode::Cold | RestartMode::Cycling | RestartMode::Cycling2 => {
                 state.restart(formula, new_seed);
             }
             RestartMode::Warm => {
@@ -880,6 +896,9 @@ pub fn solve(formula: &mut Formula, params: &Params, config: &SolverConfig) -> S
                     config.xl_decay,
                     config.restart_noise,
                 );
+            }
+            RestartMode::WarmRandom => {
+                state.warm_random_restart(formula, new_seed, config.xl_decay);
             }
             RestartMode::AntiPhase => {
                 state.anti_phase_restart(

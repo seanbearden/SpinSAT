@@ -318,6 +318,37 @@ fi
             return self._upload_via_gcs(instance_paths)
         return self._upload_via_scp(instance_paths)
 
+    def pull_instances_from_gcs(self, gcs_uri, instance_names):
+        """Pull pre-staged instances from GCS to the VM.
+
+        Instances are expected to exist at gcs_uri/<name>.cnf.xz (compressed)
+        or gcs_uri/<name>.cnf (uncompressed). The VM downloads and decompresses.
+
+        Args:
+            gcs_uri: GCS prefix, e.g. "gs://spinsat-benchmarks/instances/sat2025"
+            instance_names: List of instance basenames (e.g. ["foo.cnf", "bar.cnf"])
+        """
+        print(f"Pulling {len(instance_names)} instances from {gcs_uri}...")
+
+        # Build the gsutil cp command for all instances
+        # Try .cnf.xz first (compressed), fall back to .cnf
+        xz_names = [n + ".xz" if not n.endswith(".xz") else n for n in instance_names]
+        gcs_paths = " ".join(f"{gcs_uri}/{n}" for n in xz_names)
+
+        # Pull all at once with gsutil -m (parallel)
+        pull_cmd = (
+            f"mkdir -p /tmp/instances && "
+            f"gsutil -m cp {gcs_paths} /tmp/instances/ 2>/dev/null; "
+            # Decompress any .xz files
+            f"cd /tmp/instances && "
+            f"for f in *.xz; do [ -f \"$f\" ] && xz -d \"$f\"; done; "
+            f"ls *.cnf 2>/dev/null | wc -l"
+        )
+        result = self._ssh(pull_cmd, timeout=1800)
+        count = result.stdout.strip().split("\n")[-1]
+        print(f"  {count} instances ready on VM.")
+        return "/tmp/instances"
+
     def _upload_via_scp(self, instance_paths):
         """Pack instances into a tarball and scp to VM."""
         print(f"Packing {len(instance_paths)} instances...")

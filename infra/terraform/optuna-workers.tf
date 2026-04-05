@@ -70,9 +70,7 @@ resource "google_compute_instance_template" "optuna_worker" {
     provisioning_model          = "SPOT"
     instance_termination_action = "STOP"
     automatic_restart           = false
-    max_run_duration {
-      seconds = var.optuna_max_run_hours * 3600
-    }
+    # max_run_duration not supported with MIG — startup script has shutdown -h safety net
   }
 
   disk {

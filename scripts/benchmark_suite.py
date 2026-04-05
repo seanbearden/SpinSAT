@@ -868,7 +868,11 @@ def cloud_run(args, instances, suite_name):
         cb.create_instance()
         cb.upload_solver()
         cb.upload_worker_script()
-        cb.upload_instances(instances)
+        if args.cloud_gcs_instances:
+            instance_names = [Path(p).name for p in instances]
+            cb.pull_instances_from_gcs(args.cloud_gcs_instances, instance_names)
+        else:
+            cb.upload_instances(instances)
         solver_args = args.solver_args.split() if args.solver_args else None
         remote_results = cb.run(timeout=args.timeout, tag=args.tag,
                                 solver_args=solver_args,
@@ -996,6 +1000,8 @@ def main():
                        help="Parallel solver count — 8 mimics competition (default: 8)")
     cloud.add_argument("--cloud-bucket", default=None,
                        help="GCS bucket for CNF files (optional, speeds up repeated runs)")
+    cloud.add_argument("--cloud-gcs-instances", default=None,
+                       help="GCS URI prefix with pre-staged instances (e.g. gs://spinsat-benchmarks/instances/sat2025)")
     cloud.add_argument("--cloud-results-bucket", default="spinsat-results",
                        help="GCS bucket for results (default: spinsat-results)")
     cloud.add_argument("--cloud-project", default="spinsat",

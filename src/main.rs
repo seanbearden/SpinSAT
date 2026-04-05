@@ -102,7 +102,7 @@ fn main() {
                     .get(i)
                     .and_then(|s| RestartMode::from_str(s))
                     .unwrap_or_else(|| {
-                        eprintln!("Invalid restart mode. Use: cold, warm, anti-phase, cycling");
+                        eprintln!("Invalid restart mode. Use: cold, warm, warm-random, anti-phase, cycling, cycling2");
                         process::exit(1);
                     });
             }
@@ -195,7 +195,7 @@ fn main() {
                     eprintln!("      --trace-output <p> Trace output file (default: trace.bin)");
                     eprintln!("      --trace-memory     Also trace x_s and x_l memory variables");
                 }
-                eprintln!("  -r, --restart-mode <m>  Restart mode: cold, warm, anti-phase, cycling (default: cycling)");
+                eprintln!("  -r, --restart-mode <m>  Restart mode: cold, warm, warm-random, anti-phase, cycling, cycling2 (default: cycling)");
                 eprintln!("      --restart-noise <v> Noise scale for warm/anti-phase restarts (default: 0.05)");
                 eprintln!("      --xl-decay <v>      x_l decay factor for warm restarts (default: 0.5)");
                 eprintln!("      --no-restart       Disable restarts (single continuous integration run)");

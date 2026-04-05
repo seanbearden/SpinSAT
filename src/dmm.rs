@@ -178,6 +178,25 @@ impl DmmState {
         self.init_short_memory(formula);
     }
 
+    /// Warm-random restart: random voltages + x_l decay transfer.
+    /// Combines cold's exploration (fresh random trajectory) with warm's
+    /// memory retention (clause difficulty ranking preserved).
+    pub fn warm_random_restart(&mut self, formula: &Formula, seed: u64, xl_decay: f64) {
+        let m = formula.num_clauses();
+
+        self.v = Self::random_voltages(formula.num_vars, seed);
+
+        // x_l decay transfer: preserve clause difficulty ranking
+        for xl in self.x_l.iter_mut() {
+            *xl = 1.0 + xl_decay * (*xl - 1.0);
+        }
+
+        self.x_s = vec![0.0; m];
+        self.t = 0.0;
+        self.last_alpha_adjust_t = 0.0;
+        self.init_short_memory(formula);
+    }
+
     /// Anti-phase restart: negate best-known voltages to jump to a different
     /// solution cluster. At ratio ~4.27, solutions cluster in groups separated
     /// by O(N) Hamming distance — negation targets a different cluster.
