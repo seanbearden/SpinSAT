@@ -327,6 +327,12 @@ fi
         Args:
             gcs_uri: GCS prefix, e.g. "gs://spinsat-benchmarks/instances/sat2025"
             instance_names: List of instance basenames (e.g. ["foo.cnf", "bar.cnf"])
+
+        Returns:
+            Remote path where instances are stored.
+
+        Raises:
+            RuntimeError: If no instances were successfully downloaded.
         """
         print(f"Pulling {len(instance_names)} instances from {gcs_uri}...")
 
@@ -336,17 +342,43 @@ fi
         gcs_paths = " ".join(f"{gcs_uri}/{n}" for n in xz_names)
 
         # Pull all at once with gsutil -m (parallel)
+        # Capture stderr to report download errors
         pull_cmd = (
             f"mkdir -p /tmp/instances && "
-            f"gsutil -m cp {gcs_paths} /tmp/instances/ 2>/dev/null; "
+            f"gsutil -m cp {gcs_paths} /tmp/instances/ 2>&1; "
             # Decompress any .xz files
             f"cd /tmp/instances && "
             f"for f in *.xz; do [ -f \"$f\" ] && xz -d \"$f\"; done; "
+            f"echo '---INSTANCE_COUNT---'; "
             f"ls *.cnf 2>/dev/null | wc -l"
         )
         result = self._ssh(pull_cmd, timeout=1800)
-        count = result.stdout.strip().split("\n")[-1]
-        print(f"  {count} instances ready on VM.")
+        output = result.stdout.strip()
+
+        # Parse instance count from after our delimiter
+        if "---INSTANCE_COUNT---" in output:
+            count_str = output.split("---INSTANCE_COUNT---")[-1].strip()
+        else:
+            count_str = output.split("\n")[-1].strip()
+
+        try:
+            count = int(count_str)
+        except ValueError:
+            count = 0
+
+        if count == 0:
+            # Log the full gsutil output for debugging
+            print(f"  ERROR: gsutil output:\n{output[:2000]}")
+            raise RuntimeError(
+                f"No instances downloaded from {gcs_uri}. "
+                f"Check that files exist at {gcs_uri}/<name>.cnf.xz"
+            )
+
+        expected = len(instance_names)
+        if count < expected:
+            print(f"  WARNING: Only {count}/{expected} instances downloaded. "
+                  f"Some files may be missing from {gcs_uri}")
+        print(f"  {count}/{expected} instances ready on VM.")
         return "/tmp/instances"
 
     def _upload_via_scp(self, instance_paths):

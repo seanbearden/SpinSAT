@@ -61,6 +61,11 @@ impl Formula {
         self.clauses[m].len()
     }
 
+    /// Maximum clause width across all clauses (k in k-SAT).
+    pub fn max_clause_width(&self) -> usize {
+        self.clauses.iter().map(|c| c.len()).max().unwrap_or(0)
+    }
+
     /// Add a clause to the formula (raw 1-based signed literals).
     /// Used for incorporating learned clauses from CaDiCaL.
     pub fn add_clause(&mut self, raw_clause: &[i32]) {

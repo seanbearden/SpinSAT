@@ -368,6 +368,44 @@ fn main() {
         config.stagnation_patience = u32::MAX; // Never stagnate — run continuously
     }
 
+    // Memory guard: estimate allocation before committing to solve.
+    // Prevents OOM abort on huge structured instances (no output = silent crash).
+    {
+        let n = formula.num_vars as u64;
+        let m = formula.num_clauses() as u64;
+        let k = formula.max_clause_width() as u64;
+        let is_euler_only = matches!(strategy, Strategy::Fixed(Method::Euler));
+
+        // DmmState: v(N) + x_s(M) + x_l(M) + alpha_m(M) = N + 3M f64s
+        // Derivatives: dv(N) + dx_s(M) + dx_l(M) + c_m(M) = N + 3M f64s
+        // ScratchBuffers (non-Euler): tmp_state(N+3M) + 3×Derivatives(3×(N+3M)) = 4N+12M f64s
+        // best_voltages: N f64s
+        // Formula: ~k×M × 16 bytes (Vec<(usize, f64)> per clause)
+        let solver_floats = if is_euler_only {
+            3 * n + 7 * m // DmmState + Derivs + best_voltages
+        } else {
+            7 * n + 19 * m // + ScratchBuffers
+        };
+        let solver_bytes = solver_floats * 8;
+        let formula_bytes = k * m * 16;
+        let estimated_bytes = solver_bytes + formula_bytes;
+        let estimated_mb = estimated_bytes / (1024 * 1024);
+
+        eprintln!("c Memory estimate: ~{} MB (n={}, m={}, k={})", estimated_mb, n, m, k);
+
+        // Conservative limit: 28 GB (competition machines have 30 GB)
+        let max_bytes: u64 = 28 * 1024 * 1024 * 1024;
+        if estimated_bytes > max_bytes {
+            eprintln!(
+                "c Instance too large: estimated {} MB exceeds {} MB limit",
+                estimated_mb,
+                max_bytes / (1024 * 1024)
+            );
+            println!("s UNKNOWN");
+            process::exit(0);
+        }
+    }
+
     // Solve
     match solve(&mut formula, &params, &config) {
         SolveResult::Sat(reduced_assignment) => {
